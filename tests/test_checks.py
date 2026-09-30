@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from agent_guardrails import Cost, Mode, Policy, Reason, RecipientRule, ToolPolicy
+from agent_guardrails.checks import (
+    check_recipients,
+    compute_cost,
+    domain_allowed,
+    extract_addresses,
+    validate_arguments,
+)
+
+RULE = RecipientRule(
+    fields=["to", "cc"], allowed_domains=["example.com", "*.example.org"], max_recipients=3
+)
+
+
+@pytest.mark.parametrize(
+    ("domain", "allowed"),
+    [
+        ("example.com", True),
+        ("EXAMPLE.com", True),
+        ("example.com.", True),
+        ("mail.example.com", False),  # exact entry does not cover subdomains
+        ("evil-example.com", False),
+        ("example.com.evil.net", False),
+        ("team.example.org", True),
+        ("a.b.example.org", True),
+        ("example.org", False),  # "*." means subdomains only
+        ("notexample.org", False),
+    ],
+)
+def test_domain_matching(domain: str, allowed: bool) -> None:
+    assert domain_allowed(domain, ["example.com", "*.example.org"]) is allowed
+
+
+def test_star_allows_any_domain() -> None:
+    assert domain_allowed("anything.test", ["*"])
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("a@example.com", ["a@example.com"]),
+        ("Alice <a@example.com>", ["a@example.com"]),
+        (["a@example.com", "Bob <b@example.com>"], ["a@example.com", "b@example.com"]),
+        ("a@example.com, b@example.com", ["a@example.com", "b@example.com"]),
+        (None, []),
+    ],
+)
+def test_extract_addresses(value: object, expected: list[str]) -> None:
+    assert extract_addresses(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"a@evil.com" <b@example.com>',  # display name hides a second address
+        "a@example.com@evil.com",
+        "no-at-sign",
+        "",
+        ["a@example.com", 7],
+        {"to": "a@example.com"},
+    ],
+)
+def test_ambiguous_addresses_are_rejected(value: object) -> None:
+    with pytest.raises(ValueError, match=r"recipient|parse|malformed"):
+        extract_addresses(value)
+
+
+def test_recipients_allowed() -> None:
+    assert check_recipients(RULE, {"to": ["a@example.com"], "cc": "b@team.example.org"}) is None
+
+
+def test_recipient_outside_allow_list_is_named() -> None:
+    v = check_recipients(RULE, {"to": ["a@example.com", "x@evil.test"]})
+    assert v is not None
+    assert v.reason is Reason.RECIPIENT_NOT_ALLOWED
+    assert "x@evil.test" in v.detail
+
+
+def test_too_many_recipients_counts_all_fields() -> None:
+    v = check_recipients(
+        RULE, {"to": ["a@example.com", "b@example.com"], "cc": "c@example.com, d@example.com"}
+    )
+    assert v is not None
+    assert v.reason is Reason.TOO_MANY_RECIPIENTS
+
+
+def test_hidden_second_address_fails_closed() -> None:
+    v = check_recipients(RULE, {"to": ['"a@evil.test" <b@example.com>']})
+    assert v is not None
+    assert v.reason is Reason.RECIPIENT_NOT_ALLOWED
+
+
+def test_cost_fixed_and_field() -> None:
+    assert compute_cost(None, {}) == (0.0, None)
+    assert compute_cost(Cost(fixed=0.5), {}) == (0.5, None)
+    assert compute_cost(Cost(field="amount"), {"amount": 3}) == (3.0, None)
+
+
+@pytest.mark.parametrize("amount", [-1, math.nan, math.inf, "10", True, None])
+def test_cost_field_must_be_finite_non_negative_number(amount: object) -> None:
+    cost, v = compute_cost(Cost(field="amount"), {"amount": amount})
+    assert v is not None
+    assert v.reason is Reason.INVALID_ARGUMENTS
+    assert cost == 0.0
+
+
+def test_validation_messages_do_not_echo_input() -> None:
+    policy = Policy.from_yaml("tools: {t: {mode: allow, args: {pin: {type: int}}}}\n")
+    validated, v = validate_arguments(policy.tools["t"], {"pin": "secret-value-123"})
+    assert validated is None
+    assert v is not None
+    assert "secret-value-123" not in v.detail
+    assert "pin" in v.detail
+
+
+def test_schemaless_arguments_must_be_json() -> None:
+    validated, v = validate_arguments(ToolPolicy(mode=Mode.ALLOW), {"when": object()})
+    assert validated is None
+    assert v is not None
+    assert v.reason is Reason.INVALID_ARGUMENTS
