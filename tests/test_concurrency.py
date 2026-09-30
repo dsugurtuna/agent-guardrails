@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import sqlite3
 import threading
 import time
 import traceback
@@ -15,7 +16,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_guardrails import (
     ActionRecord,
@@ -159,12 +160,14 @@ RATE_POLICY = "tools: {ping: {mode: allow, rate_limit: {max_calls: 7, window_sec
 
 
 def _ping_from_process(home: str, worker: int, results: Any) -> None:
+    # Exactly one message per process, so an error is reported rather than leaving
+    # the parent waiting for results that will never come.
     try:
         guard = Guard(Policy.from_yaml(RATE_POLICY), home=home)
         guard.register("ping", lambda n: n)
-        for j in range(5):
-            results.put(str(guard.call("ping", {"n": worker * 100 + j}).status))
-    except Exception:  # report instead of leaving the parent waiting
+        statuses = [str(guard.call("ping", {"n": worker * 100 + j}).status) for j in range(5)]
+        results.put(json.dumps(statuses))
+    except Exception:
         results.put("ERROR " + traceback.format_exc())
 
 
@@ -176,13 +179,99 @@ def test_rate_limit_holds_across_processes(tmp_path: Path) -> None:
     ]
     for p in procs:
         p.start()
-    statuses = [results.get(timeout=180) for _ in range(20)]
-    assert not [s for s in statuses if s.startswith("ERROR")], statuses
+    messages = [results.get(timeout=120) for _ in procs]
+    errors = [m for m in messages if m.startswith("ERROR")]
+    assert not errors, errors[0]
     for p in procs:
         p.join(timeout=60)
         assert p.exitcode == 0
+    statuses = [s for m in messages for s in json.loads(m)]
     assert statuses.count("executed") == 7
     assert statuses.count("blocked") == 13
+
+
+def _busy() -> sqlite3.OperationalError:
+    exc = sqlite3.OperationalError("database is locked")
+    exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    return exc
+
+
+class _FlakyConnection:
+    """Answers ``PRAGMA journal_mode=WAL`` with "database is locked" ``fails`` times.
+
+    SQLite does this, without waiting on the busy timeout, while another process is
+    switching a new database to WAL. That window is too short to hit on demand, so
+    these tests simulate it; the multi-process test below exercises the real thing.
+    """
+
+    def __init__(self, fails: int, error: Callable[[], Exception] = _busy) -> None:
+        self.fails, self.error, self.calls = fails, error, 0
+
+    def execute(self, sql: str) -> None:
+        self.calls += 1
+        if self.calls <= self.fails:
+            raise self.error()
+
+
+def _enable_wal(store_timeout: float, conn: _FlakyConnection) -> None:
+    store = ActionStore.__new__(ActionStore)
+    store.timeout = store_timeout
+    store._enable_wal(cast(sqlite3.Connection, conn))
+
+
+def test_switching_to_wal_retries_while_another_process_holds_the_file() -> None:
+    conn = _FlakyConnection(fails=3)
+    _enable_wal(5.0, conn)
+    assert conn.calls == 4
+
+
+def test_switching_to_wal_gives_up_after_the_store_timeout() -> None:
+    conn = _FlakyConnection(fails=10_000)
+    started = time.monotonic()
+    try:
+        _enable_wal(0.2, conn)
+    except sqlite3.OperationalError as exc:
+        assert "locked" in str(exc)
+    else:
+        raise AssertionError("expected the busy error once the timeout ran out")
+    assert time.monotonic() - started < 1.0
+    assert conn.calls > 1
+
+
+def test_switching_to_wal_does_not_retry_other_errors() -> None:
+    conn = _FlakyConnection(fails=1, error=lambda: sqlite3.OperationalError("disk I/O error"))
+    try:
+        _enable_wal(5.0, conn)
+    except sqlite3.OperationalError as exc:
+        assert "disk I/O" in str(exc)
+    else:
+        raise AssertionError("expected the error to propagate")
+    assert conn.calls == 1
+
+
+def _open_store(path: str, barrier: Any, results: Any) -> None:
+    try:
+        barrier.wait(timeout=60)
+        ActionStore(Path(path))
+        results.put("ok")
+    except Exception:
+        results.put("ERROR " + traceback.format_exc())
+
+
+def test_many_processes_can_create_the_same_store_at_once(tmp_path: Path) -> None:
+    ctx = multiprocessing.get_context("spawn")
+    for round_ in range(8):
+        path = str(tmp_path / f"actions-{round_}.db")
+        barrier = ctx.Barrier(8)
+        results = ctx.Queue()
+        procs = [ctx.Process(target=_open_store, args=(path, barrier, results)) for _ in range(8)]
+        for p in procs:
+            p.start()
+        messages = [results.get(timeout=120) for _ in procs]
+        for p in procs:
+            p.join(timeout=60)
+        errors = [m for m in messages if m != "ok"]
+        assert not errors, errors[0]
 
 
 class InterleavingStore(ActionStore):
