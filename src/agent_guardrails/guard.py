@@ -70,6 +70,16 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _over_budget(total: float, limit: float) -> bool:
+    """``total > limit``, compared to nine decimal places.
+
+    Why round? Costs are floats, and binary floating point makes 0.1 + 0.1 + 0.1
+    come to 0.30000000000000004, which would refuse the third 0.1 call against a
+    budget of 0.3. Nine places is far finer than any currency or credit unit.
+    """
+    return round(total, 9) > round(limit, 9)
+
+
 def _new_id() -> str:
     return "act_" + secrets.token_hex(8)
 
@@ -396,7 +406,7 @@ class Guard:
         if budget is not None and p.cost > 0:
             since = now - budget.window_seconds if budget.window_seconds else None
             spent = tx.spent(agent, since)
-            if spent + p.cost > budget.limit:
+            if _over_budget(spent + p.cost, budget.limit):
                 return Violation(
                     Reason.BUDGET_EXCEEDED,
                     f"agent '{agent}' has spent {spent:g} of its {budget.limit:g} budget; "
@@ -521,7 +531,7 @@ class Guard:
                         f"(limit {p.tool.max_pending}).",
                     )
             budget = p.policy.budget_for(p.ctx["agent_id"])
-            if found is None and budget is not None and p.cost > budget.limit:
+            if found is None and budget is not None and _over_budget(p.cost, budget.limit):
                 found = Violation(
                     Reason.BUDGET_EXCEEDED,
                     f"this call would cost {p.cost:g}, more than the whole budget of "

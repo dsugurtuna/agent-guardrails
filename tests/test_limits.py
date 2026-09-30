@@ -143,3 +143,17 @@ tools:
     outcome = guard.call("pay", {"amount": 500})
     assert outcome.reason is Reason.BUDGET_EXCEEDED
     assert guard.pending() == []
+
+
+def test_budget_is_not_eaten_by_floating_point_error(tmp_path: Path, clock: FakeClock) -> None:
+    # 0.1 + 0.1 + 0.1 == 0.30000000000000004 in binary floating point.
+    yaml_text = """
+budgets: {"*": {limit: 0.3}}
+tools:
+  pay: {mode: allow, cost: {field: amount}, dedupe_window_seconds: 0}
+"""
+    guard, paid = _guard(tmp_path, clock, yaml_text)
+    results = [guard.call("pay", {"amount": 0.1, "ref": str(i)}).status for i in range(4)]
+    assert results == [Status.EXECUTED] * 3 + [Status.BLOCKED]
+    assert guard.call("pay", {"amount": 0.000001, "ref": "x"}).reason is Reason.BUDGET_EXCEEDED
+    assert paid == [0.1, 0.1, 0.1]

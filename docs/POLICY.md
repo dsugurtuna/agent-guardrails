@@ -26,7 +26,7 @@ policy.fingerprint()  # SHA-256, recorded with every decision
 
 | Key | Meaning |
 |---|---|
-| `limit` | Maximum total cost (any unit: pounds, credits, messages). |
+| `limit` | Maximum total cost (any unit: pounds, credits, messages), compared to nine decimal places so that floating-point error does not eat into it. |
 | `window_seconds` | Rolling window. Omit for a lifetime limit (per state directory). |
 
 ## `tools.<name>`
