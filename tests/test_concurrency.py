@@ -11,6 +11,7 @@ import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 from agent_guardrails import ActionState, AuditLog, Guard, Policy, Status, verify_log
 
@@ -135,3 +136,29 @@ def test_audit_log_with_parallel_processes(tmp_path: Path) -> None:
         assert p.exitcode == 0
     result = verify_log(path)
     assert result.ok and result.records == 100
+
+
+RATE_POLICY = "tools: {ping: {mode: allow, rate_limit: {max_calls: 7, window_seconds: 3600}}}\n"
+
+
+def _ping_from_process(home: str, worker: int, results: Any) -> None:
+    guard = Guard(Policy.from_yaml(RATE_POLICY), home=home)
+    guard.register("ping", lambda n: n)
+    for j in range(5):
+        results.put(str(guard.call("ping", {"n": worker * 100 + j}).status))
+
+
+def test_rate_limit_holds_across_processes(tmp_path: Path) -> None:
+    ctx = multiprocessing.get_context("spawn")
+    results = ctx.Queue()
+    procs = [
+        ctx.Process(target=_ping_from_process, args=(str(tmp_path), w, results)) for w in range(4)
+    ]
+    for p in procs:
+        p.start()
+    statuses = [results.get(timeout=60) for _ in range(20)]
+    for p in procs:
+        p.join(timeout=60)
+        assert p.exitcode == 0
+    assert statuses.count("executed") == 7
+    assert statuses.count("blocked") == 13
