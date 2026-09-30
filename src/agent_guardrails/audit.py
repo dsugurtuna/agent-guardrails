@@ -63,6 +63,35 @@ def json_safe(value: Any) -> Any:
     return f"<{type(value).__name__}>"
 
 
+class _AmbiguousRecord(ValueError):
+    """A line that different JSON readers could read differently."""
+
+
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in record:
+            raise _AmbiguousRecord(f"duplicate key {key!r}")
+        record[key] = value
+    return record
+
+
+def _no_constants(name: str) -> Any:
+    raise _AmbiguousRecord(f"non-standard number {name}")
+
+
+def _parse_record(line: str | bytes) -> Any:
+    """Parse one audit line strictly.
+
+    Why strict? Python's ``json`` keeps the *last* of two duplicate keys, so a forged
+    first value would leave the parsed record, and so its hash, unchanged while a
+    person, ``grep`` or a first-wins parser reads the forgery. ``NaN`` and
+    ``Infinity`` are not JSON, and cannot be hashed canonically. Both are refused.
+    Raises ``ValueError`` (``json.JSONDecodeError`` for syntax errors).
+    """
+    return json.loads(line, object_pairs_hook=_unique_keys, parse_constant=_no_constants)
+
+
 def _iso(ts: float) -> str:
     return (
         datetime.fromtimestamp(ts, tz=UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -161,8 +190,10 @@ class AuditLog:
         if last is None:
             return 0, GENESIS_HASH
         try:
-            record = json.loads(last)
-        except json.JSONDecodeError as exc:
+            record = _parse_record(last)
+        except _AmbiguousRecord as exc:
+            raise AuditIntegrityError(f"last audit record is ambiguous: {exc}") from exc
+        except (ValueError, RecursionError) as exc:
             raise AuditIntegrityError("last audit record is not valid JSON") from exc
         if not isinstance(record, dict) or record_hash(record) != record.get("hash"):
             # Refuse to chain onto a record that has been altered: fail closed.
@@ -208,8 +239,10 @@ def verify_log(
             if not raw.endswith(b"\n"):
                 return VerificationResult(False, count, prev, "last line is incomplete", lineno)
             try:
-                record = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                record = _parse_record(raw.decode("utf-8"))
+            except _AmbiguousRecord as exc:
+                return VerificationResult(False, count, prev, f"line is ambiguous: {exc}", lineno)
+            except (ValueError, RecursionError):  # includes UnicodeDecodeError
                 return VerificationResult(False, count, prev, "line is not valid JSON", lineno)
             if not isinstance(record, dict):
                 return VerificationResult(False, count, prev, "line is not a JSON object", lineno)

@@ -120,3 +120,38 @@ def test_unicode_line_separators_cannot_split_a_record(tmp_path: Path) -> None:
     assert len(text.splitlines()) == 1
     assert json.loads(text)["detail"] == "a\u2028b\x85c\u2029d"
     assert verify_log(log.path).ok
+
+
+def test_duplicate_keys_are_rejected(tmp_path: Path) -> None:
+    # Python's json keeps the *last* duplicate, so a forged first value leaves the
+    # parsed record (and its hash) unchanged while a person or grep reads the forgery.
+    log = _log(tmp_path, 2)
+    lines = log.path.read_text().splitlines()
+    assert '"event":"executed"' in lines[0]
+    lines[0] = '{"event":"approved_by_ceo",' + lines[0][1:]
+    log.path.write_text("\n".join(lines) + "\n")
+    result = verify_log(log.path)
+    assert not result.ok
+    assert result.line == 1
+    assert "duplicate key" in (result.error or "")
+    lines = log.path.read_text().splitlines()
+    lines[0], lines[1] = (
+        lines[0].replace('"event":"approved_by_ceo",', ""),
+        ('{"n":7,' + lines[1][1:]),
+    )
+    log.path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(AuditIntegrityError, match="duplicate key"):
+        log.append("executed")
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_numbers_are_reported_not_raised(tmp_path: Path, constant: str) -> None:
+    log = _log(tmp_path, 2)
+    lines = log.path.read_text().splitlines()
+    lines[0] = lines[0].replace('"n":0', f'"n":{constant}')
+    lines[1] = lines[1].replace('"n":1', f'"n":{constant}')
+    log.path.write_text("\n".join(lines) + "\n")
+    result = verify_log(log.path)  # must return a failure, not raise ValueError
+    assert not result.ok and result.line == 1
+    with pytest.raises(AuditIntegrityError):
+        log.append("executed")
