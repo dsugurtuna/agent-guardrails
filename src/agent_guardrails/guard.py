@@ -780,8 +780,7 @@ def reject_action(
     now: float,
     note: str | None = None,
 ) -> ActionRecord:
-    before = store.get(action_id).status
-    rec = store.reject(action_id, by=by, now=now, note=note)
+    rec, before = store.reject_from(action_id, by=by, now=now, note=note)
     fields = {"tool": rec.tool, "agent_id": rec.agent_id, "action_id": rec.id, "by": by}
     extra = {"note": note} if note else {}
     audit.append("rejected", **fields, was=str(before), **extra)

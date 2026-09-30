@@ -23,11 +23,13 @@ from agent_guardrails import (
     ActionStore,
     AuditLog,
     Guard,
+    InvalidTransitionError,
     Policy,
     Reason,
     Status,
     verify_log,
 )
+from agent_guardrails.guard import reject_action
 from agent_guardrails.store import Tx
 
 N = 24
@@ -306,3 +308,27 @@ def test_each_decision_records_the_policy_it_was_made_under(tmp_path: Path) -> N
     # The call was decided under the old policy (it ran), so it must say so.
     assert outcome.status is Status.EXECUTED
     assert decision["policy_hash"] == old.fingerprint()
+
+
+def test_rejection_records_the_state_it_actually_overrode(tmp_path: Path) -> None:
+    # Bob rejects while Alice approves. The audit must say whether Bob rejected a
+    # pending request or withdrew Alice's approval: that is who overrode whom.
+    store = InterleavingStore(tmp_path / "queue.db")
+    guard = Guard(Policy.from_yaml("tools: {send: {mode: approve}}\n"), home=tmp_path, store=store)
+    queued = guard.call("send", {"to": "a@example.com"})
+    action_id = queued.action_id
+    assert action_id is not None
+    approved_first: list[bool] = []
+
+    def alice_approves() -> None:
+        try:
+            store.approve(action_id, by="alice", now=time.time())
+            approved_first.append(True)
+        except InvalidTransitionError:
+            approved_first.append(False)
+
+    store.after_get = alice_approves
+    reject_action(store, guard.audit, action_id, by="bob", now=time.time())
+    records = [json.loads(line) for line in guard.audit.path.read_text().splitlines()]
+    rejected = next(r for r in records if r["event"] == "rejected")
+    assert rejected["was"] == ("approved" if approved_first == [True] else "pending")

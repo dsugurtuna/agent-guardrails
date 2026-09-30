@@ -337,6 +337,17 @@ class ActionStore:
         Rejecting an *approved* action is how a reviewer withdraws an approval before
         it runs, for example while the kill switch is engaged during an incident.
         """
+        return self.reject_from(action_id, by=by, now=now, note=note)[0]
+
+    def reject_from(
+        self, action_id: str, *, by: str, now: float, note: str | None = None
+    ) -> tuple[ActionRecord, ActionState]:
+        """Like :meth:`reject`, also returning the state the rejection replaced.
+
+        The previous state is read in the same transaction as the change, so the
+        audit can say reliably whether a pending request was refused or an approval
+        withdrawn, even while another reviewer is deciding.
+        """
         with self.transaction() as tx:
             rec = tx.get(action_id)
             allowed = (ActionState.PENDING, ActionState.APPROVED)
@@ -354,4 +365,4 @@ class ActionStore:
                 decision_note=note,
                 finished_at=now,
             )
-        return self.get(action_id)
+        return self.get(action_id), rec.status
