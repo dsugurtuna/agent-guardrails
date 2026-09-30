@@ -617,13 +617,19 @@ class Guard:
         def close(reason: Reason, message: str) -> Outcome:
             """Permanently stop this approved action (it will never run)."""
             with self.store.transaction() as tx:
-                tx.update(
+                closed = tx.update(
                     action_id,
                     expect=(ActionState.APPROVED,),
                     status=ActionState.BLOCKED,
                     reason=str(reason),
                     finished_at=now,
                 )
+            if not closed:  # another worker claimed (or someone rejected) it meanwhile
+                status = self.store.get(action_id).status
+                msg = (
+                    f"action {action_id} is now {status}, not approved; this worker did not run it."
+                )
+                return self._block(ctx, Reason.NOT_APPROVED, msg, logged, action_id)
             return self._block(ctx, reason, message, logged, action_id, hidden=hidden)
 
         if rec.status is not ActionState.APPROVED:
@@ -676,15 +682,25 @@ class Guard:
                         cost=prepared.cost,
                         policy_hash=self._policy_hash,
                     )
+                elif isinstance(found, ActionRecord) or found.reason not in TRANSIENT_REASONS:
+                    # Close it in the same transaction as the check: done afterwards, it
+                    # could overwrite the claim of a worker that is now running it.
+                    reason = "duplicate" if isinstance(found, ActionRecord) else str(found.reason)
+                    tx.update(
+                        action_id,
+                        expect=(ActionState.APPROVED,),
+                        status=ActionState.BLOCKED,
+                        reason=reason,
+                        finished_at=now,
+                    )
         if isinstance(found, ActionRecord):
-            self._set_state(action_id, ActionState.BLOCKED, "duplicate")
             return self._duplicate(ctx, found, logged)
         if isinstance(found, Violation):
             if found.reason in TRANSIENT_REASONS:
                 return self._block(
                     ctx, found.reason, f"{found.detail} It stays approved.", logged, action_id
                 )
-            return close(found.reason, found.detail)
+            return self._block(ctx, found.reason, found.detail, logged, action_id, hidden=hidden)
         if not claimed:
             msg = f"action {action_id} was claimed by another worker; it was not run twice."
             return Outcome(Status.DUPLICATE, rec.tool, msg, action_id=action_id)
