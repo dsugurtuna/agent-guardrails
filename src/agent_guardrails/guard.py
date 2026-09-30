@@ -696,14 +696,11 @@ def reject_action(
     now: float,
     note: str | None = None,
 ) -> ActionRecord:
-    try:
-        rec = store.reject(action_id, by=by, now=now, note=note)
-    except ApprovalExpiredError:
-        rec = store.get(action_id)
-        audit.append("expired", tool=rec.tool, agent_id=rec.agent_id, action_id=rec.id)
-        raise
+    before = store.get(action_id).status
+    rec = store.reject(action_id, by=by, now=now, note=note)
     fields = {"tool": rec.tool, "agent_id": rec.agent_id, "action_id": rec.id, "by": by}
-    audit.append("rejected", **fields, **({"note": note} if note else {}))
+    extra = {"note": note} if note else {}
+    audit.append("rejected", **fields, was=str(before), **extra)
     return rec
 
 

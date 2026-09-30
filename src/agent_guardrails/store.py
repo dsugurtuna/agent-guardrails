@@ -280,15 +280,16 @@ class ActionStore:
                 )
         return expired
 
-    def _decide(
-        self, action_id: str, new: ActionState, by: str, now: float, note: str | None
+    def approve(
+        self, action_id: str, *, by: str, now: float, note: str | None = None
     ) -> ActionRecord:
+        """pending -> approved. Raises if the action is not pending or has expired."""
         expired = False
         with self.transaction() as tx:
             rec = tx.get(action_id)
             if rec.status is not ActionState.PENDING:
                 raise InvalidTransitionError(
-                    f"action {action_id} is {rec.status}, only pending actions can be decided"
+                    f"action {action_id} is {rec.status}; only pending actions can be approved"
                 )
             if rec.expires_at is not None and rec.expires_at <= now:
                 tx.update(
@@ -302,21 +303,38 @@ class ActionStore:
                 tx.update(
                     action_id,
                     expect=(ActionState.PENDING,),
-                    status=new,
+                    status=ActionState.APPROVED,
                     decided_at=now,
                     decided_by=by,
                     decision_note=note,
                 )
         if expired:
-            raise ApprovalExpiredError(f"action {action_id} expired before it was decided")
+            raise ApprovalExpiredError(f"action {action_id} expired before it was approved")
         return self.get(action_id)
-
-    def approve(
-        self, action_id: str, *, by: str, now: float, note: str | None = None
-    ) -> ActionRecord:
-        return self._decide(action_id, ActionState.APPROVED, by, now, note)
 
     def reject(
         self, action_id: str, *, by: str, now: float, note: str | None = None
     ) -> ActionRecord:
-        return self._decide(action_id, ActionState.REJECTED, by, now, note)
+        """pending or approved -> rejected.
+
+        Rejecting an *approved* action is how a reviewer withdraws an approval before
+        it runs, for example while the kill switch is engaged during an incident.
+        """
+        with self.transaction() as tx:
+            rec = tx.get(action_id)
+            allowed = (ActionState.PENDING, ActionState.APPROVED)
+            if rec.status not in allowed:
+                raise InvalidTransitionError(
+                    f"action {action_id} is {rec.status}; only pending or approved actions "
+                    "can be rejected"
+                )
+            tx.update(
+                action_id,
+                expect=allowed,
+                status=ActionState.REJECTED,
+                decided_at=now,
+                decided_by=by,
+                decision_note=note,
+                finished_at=now,
+            )
+        return self.get(action_id)
