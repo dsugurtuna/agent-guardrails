@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import multiprocessing
 import threading
+import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -142,10 +143,13 @@ RATE_POLICY = "tools: {ping: {mode: allow, rate_limit: {max_calls: 7, window_sec
 
 
 def _ping_from_process(home: str, worker: int, results: Any) -> None:
-    guard = Guard(Policy.from_yaml(RATE_POLICY), home=home)
-    guard.register("ping", lambda n: n)
-    for j in range(5):
-        results.put(str(guard.call("ping", {"n": worker * 100 + j}).status))
+    try:
+        guard = Guard(Policy.from_yaml(RATE_POLICY), home=home)
+        guard.register("ping", lambda n: n)
+        for j in range(5):
+            results.put(str(guard.call("ping", {"n": worker * 100 + j}).status))
+    except Exception:  # report instead of leaving the parent waiting
+        results.put("ERROR " + traceback.format_exc())
 
 
 def test_rate_limit_holds_across_processes(tmp_path: Path) -> None:
@@ -156,7 +160,8 @@ def test_rate_limit_holds_across_processes(tmp_path: Path) -> None:
     ]
     for p in procs:
         p.start()
-    statuses = [results.get(timeout=60) for _ in range(20)]
+    statuses = [results.get(timeout=180) for _ in range(20)]
+    assert not [s for s in statuses if s.startswith("ERROR")], statuses
     for p in procs:
         p.join(timeout=60)
         assert p.exitcode == 0
