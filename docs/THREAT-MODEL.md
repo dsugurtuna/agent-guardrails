@@ -79,7 +79,9 @@ Being clear about this matters more than the list above.
   not catch the same message reworded.
 - **Ambiguous failures.** If a tool times out after the side effect happened, a
   retry may repeat it: failed actions are not de-duplicated (so genuine failures can
-  be retried), although they do count towards rate limits and budgets.
+  be retried), although they do count towards rate limits and budgets. If the process
+  dies mid-call, the action stays `executing`; identical retries are refused within
+  the de-duplication window and allowed after it.
 - **Clock manipulation.** TTLs and windows use the system clock.
 - **The kill switch is cooperative.** It stops actions that pass through a guard
   that checks it. It does not stop processes or revoke credentials; pair it with

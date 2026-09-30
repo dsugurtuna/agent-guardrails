@@ -103,3 +103,19 @@ def test_dedupe_can_be_disabled(tmp_path: Path, clock: FakeClock) -> None:
     guard = Guard(policy, home=tmp_path, clock=clock)
     guard.register("ping", lambda: "pong")
     assert [guard.call("ping").status for _ in range(3)] == [Status.EXECUTED] * 3
+
+
+def test_crash_mid_execution_blocks_retries_only_within_the_window(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    policy = Policy.from_yaml("tools: {remind: {mode: allow, dedupe_window_seconds: 600}}\n")
+    guard = Guard(policy, home=tmp_path, clock=clock)
+    guard.register("remind", lambda to: "ok")
+    # Simulate a process that reserved the action and died before recording the result.
+    first = guard.call("remind", {"to": "a@example.com"})
+    assert first.action_id is not None
+    with guard.store.transaction() as tx:
+        tx.update(first.action_id, status="executing", finished_at=None)
+    assert guard.call("remind", {"to": "a@example.com"}).status is Status.DUPLICATE
+    clock.advance(601)
+    assert guard.call("remind", {"to": "a@example.com"}).status is Status.EXECUTED

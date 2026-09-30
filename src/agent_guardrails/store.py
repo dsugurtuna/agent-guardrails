@@ -35,7 +35,7 @@ class ActionState(StrEnum):
     BLOCKED = "blocked"  # stopped by a check at execution time
 
 
-LIVE_STATES = (ActionState.PENDING, ActionState.APPROVED, ActionState.EXECUTING)
+AWAITING_STATES = (ActionState.PENDING, ActionState.APPROVED)
 RAN_STATES = (ActionState.EXECUTING, ActionState.EXECUTED, ActionState.FAILED)
 
 _SCHEMA = """
@@ -154,13 +154,24 @@ class Tx:
     def find_duplicate(
         self, dedupe_key: str, since: float, exclude_id: str | None = None
     ) -> ActionRecord | None:
-        """A live action with this key, or one executed since ``since``."""
+        """An identical action that is awaiting approval, or that ran since ``since``.
+
+        Pending and approved actions count whatever their age (their TTL bounds them).
+        An action still marked ``executing`` counts only within the window, so a
+        process that crashed mid-call does not block that action for ever.
+        """
         sql = (
             f"SELECT * FROM actions WHERE dedupe_key = ? AND ("  # noqa: S608
-            f"status IN ({_placeholders(len(LIVE_STATES))}) "
-            "OR (status = ? AND finished_at >= ?))"
+            f"status IN ({_placeholders(len(AWAITING_STATES))}) "
+            "OR (status IN (?, ?) AND COALESCE(finished_at, started_at) >= ?))"
         )
-        params: list[Any] = [dedupe_key, *LIVE_STATES, ActionState.EXECUTED, since]
+        params: list[Any] = [
+            dedupe_key,
+            *AWAITING_STATES,
+            ActionState.EXECUTING,
+            ActionState.EXECUTED,
+            since,
+        ]
         if exclude_id is not None:
             sql += " AND id != ?"
             params.append(exclude_id)
