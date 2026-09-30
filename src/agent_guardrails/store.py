@@ -5,6 +5,10 @@ The same rows answer four questions: what is waiting for approval, how many
 calls ran in the rate-limit window, how much each agent has spent, and whether
 an identical action already happened.
 
+Rows for queued (approve-mode) actions hold the full arguments, because the action
+runs later from its row; rows for actions run at once hold only the redacted
+arguments. Protect the database file like a credential store.
+
 Why SQLite? It is in the standard library, it survives restarts, and
 ``BEGIN IMMEDIATE`` transactions give an atomic check-then-reserve step, so two
 concurrent callers cannot both squeeze under the same rate limit or budget.

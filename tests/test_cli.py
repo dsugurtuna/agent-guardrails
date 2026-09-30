@@ -119,3 +119,22 @@ def test_audit_verify_against_an_older_anchor(
     with pytest.raises(SystemExit) as info:
         main([*home, "audit", "verify", "--anchor", "not-an-anchor"])
     assert info.value.code == 2
+
+
+def test_secrets_of_allowed_calls_are_not_kept_in_the_queue(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An allowed call runs at once and is never executed from its row again, so the
+    # row needs no secrets; a reviewer listing past actions must not see them.
+    guard = Guard(Policy.from_yaml("tools: {login: {mode: allow}}\n"), home=tmp_path)
+    guard.register("login", lambda user, password: "ok")
+    outcome = guard.call("login", {"user": "sam", "password": "hunter2-very-secret"})
+    assert outcome.status is Status.EXECUTED and outcome.action_id is not None
+    assert guard.store.get(outcome.action_id).args == {"user": "sam", "password": "[REDACTED]"}
+    assert main(["--home", str(tmp_path), "queue", "list", "-s", "all", "--json"]) == 0
+    assert "hunter2" not in capsys.readouterr().out
+    for db_file in tmp_path.glob("queue.db*"):
+        assert b"hunter2" not in db_file.read_bytes()
+    # De-duplication still recognises the retry.
+    again = guard.call("login", {"user": "sam", "password": "hunter2-very-secret"})
+    assert again.status is Status.DUPLICATE

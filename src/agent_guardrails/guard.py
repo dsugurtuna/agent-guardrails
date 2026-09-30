@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from ._canonical import canonical_json, dedupe_key, digest, utf8_safe
-from .audit import AuditLog
+from .audit import AuditLog, json_safe
 from .checks import (
     ValidatedArgs,
     Violation,
@@ -413,7 +413,7 @@ class Guard:
             found = self._check_limits(tx, p, now)
             if found is None:
                 tx.insert(
-                    **self._row(p, action_id, now),
+                    **self._row(p, action_id, now, keep_secrets=False),
                     status=ActionState.EXECUTING,
                     started_at=now,
                 )
@@ -424,13 +424,21 @@ class Guard:
         return self._run(p, action_id, reg, approved_by=None)
 
     @staticmethod
-    def _row(p: _Prepared, action_id: str, now: float) -> dict[str, Any]:
+    def _row(p: _Prepared, action_id: str, now: float, *, keep_secrets: bool) -> dict[str, Any]:
+        """Column values for a new action.
+
+        A queued action must keep its full arguments: it runs later, from this row,
+        and they are bound to ``args_digest``. An action run at once (allow mode) is
+        never executed from its row again, so only its redacted arguments are kept,
+        as in the audit log; ``args_digest`` still identifies the full arguments.
+        """
+        args = p.validated.stored if keep_secrets else json_safe(p.logged)
         return {
             "id": action_id,
             "tool": p.ctx["tool"],
             "agent_id": p.ctx["agent_id"],
             "mode": p.ctx["mode"],
-            "args_json": canonical_json(p.validated.stored),
+            "args_json": canonical_json(args),
             "args_digest": p.args_digest,
             "dedupe_key": p.key,
             "cost": p.cost,
@@ -521,7 +529,7 @@ class Guard:
                 )
             if found is None:
                 tx.insert(
-                    **self._row(p, action_id, now),
+                    **self._row(p, action_id, now, keep_secrets=True),
                     status=ActionState.PENDING,
                     expires_at=expires_at,
                 )

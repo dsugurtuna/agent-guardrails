@@ -62,6 +62,12 @@ Being clear about this matters more than the list above.
 - **Reads.** Read tools are not controlled unless you wrap them, by design
   ("read freely"). Reading can still expose sensitive data to the model.
 - **Bypass paths.** Anything the agent can reach without going through the guard.
+- **Secrets in the queue database.** An action queued for approval keeps its full
+  arguments in `queue.db`, including fields redacted from the audit log, because it
+  must later run with its real arguments; `queue show` displays them to reviewers.
+  Actions run at once keep only redacted arguments. Nothing is purged yet: protect
+  `queue.db` like a credential store, and prefer tools that look secrets up
+  themselves over tools that take them as arguments.
 - **A compromised host.** Anyone with write access to the SQLite file can mark
   actions approved. Anyone with write access to the audit log can rewrite it and
   recompute every hash; only an anchor kept elsewhere (`audit head`, then later
