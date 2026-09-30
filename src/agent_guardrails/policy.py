@@ -250,14 +250,20 @@ class Policy(BaseModel):
 
     @classmethod
     def from_yaml(cls, source: str | Path) -> Policy:
-        """Load from a YAML file path, or from a YAML string if it contains a newline."""
-        if isinstance(source, Path) or "\n" not in source:
+        """Load from a YAML file (a ``Path``, or a string naming an existing file) or text."""
+        if isinstance(source, Path):
+            text = source.read_text(encoding="utf-8")
+        elif "\n" not in source and Path(source).is_file():
             text = Path(source).read_text(encoding="utf-8")
         else:
             text = source
-        data = yaml.safe_load(text)
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise PolicyError(f"policy is not valid YAML: {exc}") from exc
         if not isinstance(data, dict):
-            raise PolicyError("policy YAML must be a mapping at the top level")
+            hint = " (is the file path right?)" if isinstance(data, str) else ""
+            raise PolicyError(f"policy YAML must be a mapping at the top level{hint}")
         return cls.from_dict(data)
 
     # -- queries ------------------------------------------------------------------

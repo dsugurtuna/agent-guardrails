@@ -128,3 +128,14 @@ def test_choices_on_lists_apply_to_items() -> None:
     assert model.model_validate({"tags": ["a", "b"]}).model_dump() == {"tags": ["a", "b"]}
     with pytest.raises(ValidationError):
         model.model_validate({"tags": ["c"]})
+
+
+def test_from_yaml_accepts_path_string_and_single_line_text(tmp_path: Path) -> None:
+    path = tmp_path / "p.yaml"
+    path.write_text("tools: {x: {mode: allow}}\n", encoding="utf-8")
+    assert Policy.from_yaml(str(path)).mode_for("x") is Mode.ALLOW
+    assert Policy.from_yaml("tools: {x: {mode: draft}}").mode_for("x") is Mode.DRAFT
+    with pytest.raises(PolicyError, match="file path"):
+        Policy.from_yaml("missing-policy.yaml")
+    with pytest.raises(PolicyError, match="not valid YAML"):
+        Policy.from_yaml("tools: {x: [unclosed\n")
