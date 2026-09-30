@@ -67,7 +67,8 @@ down in the threat model rather than hidden.
 
 **Why normalise arguments before de-duplicating, and why only lightly?**
 Because retries from a model are rarely byte-identical: key order, trailing spaces,
-Unicode composition and the order or case of recipients vary. Those are normalised.
+Unicode composition, `10` versus `10.0`, and how the recipients are written (order,
+case, display names) vary. Those are normalised.
 Rewording is not, because deciding that two differently worded messages "mean the
 same" is a judgement the library should not make silently. The key ignores which
 agent asked, because the duplicate email is just as unwelcome either way.

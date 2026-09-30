@@ -12,6 +12,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Iterable
+from email.utils import getaddresses
 from typing import Any
 
 _LDH_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -64,29 +65,45 @@ def normalise(obj: Any) -> Any:
 
     Strings are NFC-normalised and stripped of surrounding whitespace, so a retry
     that differs only by a trailing space or a different Unicode composition of
-    the same character is still recognised as the same action. Paraphrases are
-    *not* recognised; that is a documented limit.
+    the same character is still recognised as the same action. Whole-number floats
+    become integers, because JSON does not distinguish ``10`` from ``10.0`` and a
+    model may emit either. Paraphrases are *not* recognised; that is a documented
+    limit.
     """
     if isinstance(obj, str):
         return _normalise_text(obj)
+    if isinstance(obj, float) and obj.is_integer():
+        return int(obj)  # bool is not a float, so True stays distinct from 1
     if isinstance(obj, dict):
         return {str(k): normalise(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, list | tuple):
         return [normalise(v) for v in obj]
     return obj
+
+
+def _address_set(value: Any) -> Any:
+    """The set of bare, case-folded addresses a recipient field names, sorted."""
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list):
+        return value
+    found: set[str] = set()
+    for item in items:
+        text = str(item)
+        parsed = [addr for _name, addr in getaddresses([text]) if addr]
+        found.update(addr.casefold() for addr in (parsed or [text]))
+    return sorted(found)
 
 
 def dedupe_key(tool: str, args: dict[str, Any], recipient_fields: Iterable[str] = ()) -> str:
     """Key used to recognise "the same action" within the de-duplication window.
 
-    Recipient fields are case-folded and sorted, because ``[A@x.com, b@x.com]`` and
-    ``[b@x.com, a@x.com]`` deliver the same message to the same people.
+    Recipient fields are reduced to the sorted set of case-folded bare addresses,
+    because ``[A@x.com, b@x.com]``, ``[b@x.com, a@x.com]``, ``"a@x.com, b@x.com"``
+    and ``["Ann <a@x.com>", "b@x.com", "b@x.com"]`` deliver the same message to the
+    same people. (The recipient check has already refused anything ambiguous.)
     """
     norm: dict[str, Any] = normalise(args)
     for field in recipient_fields:
-        value = norm.get(field)
-        if isinstance(value, str):
-            norm[field] = value.casefold()
-        elif isinstance(value, list):
-            norm[field] = sorted(str(v).casefold() for v in value)
+        if norm.get(field) is not None:
+            norm[field] = _address_set(norm[field])
     return digest({"tool": tool, "args": norm})

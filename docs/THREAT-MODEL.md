@@ -75,8 +75,9 @@ Being clear about this matters more than the list above.
   does not authenticate anyone. Put approval behind your own identity system if the
   approver's identity matters.
 - **Paraphrased duplicates.** De-duplication catches identical actions, with
-  whitespace, Unicode form, key order and recipient case/order normalised. It does
-  not catch the same message reworded.
+  whitespace, Unicode form, key order, number form (`10` and `10.0`) and recipients
+  (case, order, repeats, display names, list or comma-separated string) normalised.
+  It does not catch the same message reworded.
 - **Ambiguous failures.** If a tool times out after the side effect happened, a
   retry may repeat it: failed actions are not de-duplicated (so genuine failures can
   be retried), although they do count towards rate limits and budgets. If the process

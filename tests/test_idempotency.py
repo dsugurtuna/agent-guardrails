@@ -119,3 +119,43 @@ def test_crash_mid_execution_blocks_retries_only_within_the_window(
     assert guard.call("remind", {"to": "a@example.com"}).status is Status.DUPLICATE
     clock.advance(601)
     assert guard.call("remind", {"to": "a@example.com"}).status is Status.EXECUTED
+
+
+def test_numbers_that_are_equal_in_json_are_the_same_action(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    # A model may retry {"amount": 10} as {"amount": 10.0}; JSON does not tell them apart.
+    policy = Policy.from_yaml("tools: {pay: {mode: allow}}\n")
+    guard = Guard(policy, home=tmp_path, clock=clock)
+    paid: list[float] = []
+    guard.register("pay", lambda amount, to: paid.append(amount))
+    assert guard.call("pay", {"amount": 10, "to": "shop"}).status is Status.EXECUTED
+    assert guard.call("pay", {"amount": 10.0, "to": "shop"}).status is Status.DUPLICATE
+    assert guard.call("pay", {"amount": 10.5, "to": "shop"}).status is Status.EXECUTED
+    assert paid == [10, 10.5]
+    assert dedupe_key("t", {"x": -0.0}) == dedupe_key("t", {"x": 0})
+    assert dedupe_key("t", {"x": True}) != dedupe_key("t", {"x": 1})
+
+
+def test_recipients_are_compared_as_addresses(
+    make_guard: MakeGuard, email_policy: Policy, backend: Backend
+) -> None:
+    guard = make_guard(email_policy)
+    base = {"subject": "Reminder", "body": "10am"}
+    first = guard.call("send_email", {**base, "to": ["sam@example.com"]})
+    assert first.status is Status.QUEUED
+    for retry in (
+        ["Sam <sam@example.com>"],  # display name added
+        ["sam@example.com", "SAM@example.com"],  # same person listed twice
+    ):
+        again = guard.call("send_email", {**base, "to": retry})
+        assert again.status is Status.DUPLICATE, retry
+        assert again.action_id == first.action_id
+    # Scalar, comma-separated and list forms name the same people.
+    assert dedupe_key("s", {"to": "a@x.test, b@x.test"}, ["to"]) == dedupe_key(
+        "s", {"to": ["b@x.test", "a@x.test"]}, ["to"]
+    )
+    assert dedupe_key("s", {"to": "a@x.test"}, ["to"]) == dedupe_key(
+        "s", {"to": ["a@x.test"]}, ["to"]
+    )
+    assert len(guard.pending()) == 1
