@@ -67,14 +67,33 @@ _PY_TYPES: dict[str, Any] = {
     "int": int,
     "float": float,
     "bool": bool,
-    "list[str]": list[str],
-    "list[int]": list[int],
-    "list[float]": list[float],
+    "list[str]": str,  # item type; the list is built in ArgSpec.to_field
+    "list[int]": int,
+    "list[float]": float,
+}
+
+_STRING_KEYS = ("min_length", "max_length", "pattern")
+_NUMBER_KEYS = ("ge", "le")
+_LIST_KEYS = ("min_items", "max_items")
+_APPLICABLE: dict[str, tuple[str, ...]] = {
+    "str": _STRING_KEYS,
+    "int": _NUMBER_KEYS,
+    "float": _NUMBER_KEYS,
+    "bool": (),
+    "list[str]": _STRING_KEYS + _LIST_KEYS,
+    "list[int]": _NUMBER_KEYS + _LIST_KEYS,
+    "list[float]": _NUMBER_KEYS + _LIST_KEYS,
 }
 
 
 class ArgSpec(_Strict):
-    """A small, YAML-friendly argument schema. Use ``args_model`` in Python for more."""
+    """A small, YAML-friendly argument schema. Use ``args_model`` in Python for more.
+
+    For list types, ``choices``, the string constraints (``min_length``,
+    ``max_length``, ``pattern``) and the numeric bounds (``ge``, ``le``) apply to each
+    item; ``min_items`` and ``max_items`` apply to the list. A constraint that cannot
+    apply to the type is an error, not silently ignored.
+    """
 
     type: ArgType = "str"
     required: bool = True
@@ -89,31 +108,46 @@ class ArgSpec(_Strict):
     min_items: int | None = Field(default=None, ge=0)
     max_items: int | None = Field(default=None, ge=0)
 
+    @model_validator(mode="after")
+    def _constraints_apply(self) -> ArgSpec:
+        allowed = _APPLICABLE[self.type]
+        misplaced = [
+            key
+            for key in _STRING_KEYS + _NUMBER_KEYS + _LIST_KEYS
+            if getattr(self, key) is not None and key not in allowed
+        ]
+        if misplaced:
+            raise ValueError(
+                f"{', '.join(misplaced)} does not apply to type '{self.type}' "
+                f"(allowed: {', '.join(allowed) or 'choices only'})"
+            )
+        return self
+
     def to_field(self) -> tuple[Any, Any]:
-        py_type: Any = _PY_TYPES[self.type]
-        is_list = self.type.startswith("list")
+        value_type: Any = _PY_TYPES[self.type]
         if self.choices is not None:
-            allowed: Any = Literal[tuple(self.choices)]
-            py_type = list[allowed] if is_list else allowed
-        constraints: dict[str, Any] = {}
-        if self.type == "str":
-            for key in ("min_length", "max_length", "pattern"):
-                if getattr(self, key) is not None:
-                    constraints[key] = getattr(self, key)
-        if self.type in ("int", "float"):
-            for key in ("ge", "le"):
-                if getattr(self, key) is not None:
-                    constraints[key] = getattr(self, key)
-        if is_list:
+            value_type = Literal[tuple(self.choices)]
+        value_constraints = {
+            key: getattr(self, key)
+            for key in _STRING_KEYS + _NUMBER_KEYS
+            if getattr(self, key) is not None
+        }
+        py_type: Any
+        if self.type.startswith("list"):
+            item: Any = Annotated[value_type, Field(**value_constraints)]
+            list_constraints: dict[str, Any] = {}
             if self.min_items is not None:
-                constraints["min_length"] = self.min_items
+                list_constraints["min_length"] = self.min_items
             if self.max_items is not None:
-                constraints["max_length"] = self.max_items
-        field_info = Field(description=self.description, **constraints)
-        annotated = Annotated[py_type, field_info]
+                list_constraints["max_length"] = self.max_items
+            py_type = Annotated[list[item], Field(description=self.description, **list_constraints)]
+        else:
+            py_type = Annotated[
+                value_type, Field(description=self.description, **value_constraints)
+            ]
         if self.required:
-            return (annotated, ...)
-        return (annotated | None, self.default)
+            return (py_type, ...)
+        return (py_type | None, self.default)
 
 
 class RecipientRule(_Strict):

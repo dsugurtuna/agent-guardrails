@@ -156,3 +156,55 @@ def test_malformed_allow_list_entries_fail_loudly(entry: str) -> None:
                 }
             }
         )
+
+
+def _arg_model(spec: dict[str, object]) -> type[BaseModel]:
+    policy = Policy.from_dict({"tools": {"t": {"mode": "allow", "args": {"x": spec}}}})
+    model = policy.tools["t"].schema_model
+    assert model is not None
+    return model
+
+
+@pytest.mark.parametrize(
+    ("spec", "good", "bad"),
+    [
+        # String constraints on a list[str] apply to every item, as `choices` does.
+        (
+            {"type": "list[str]", "pattern": r"^[a-z]+@example\.com$"},
+            ["a@example.com"],
+            ["a@example.com", "x@evil.test"],
+        ),
+        ({"type": "list[str]", "max_length": 3}, ["abc"], ["abcd"]),
+        ({"type": "list[str]", "min_length": 2}, ["ab"], ["a"]),
+        # Numeric bounds on a list of numbers apply to every item.
+        ({"type": "list[float]", "ge": 0}, [0.0, 5.5], [5.5, -100.0]),
+        ({"type": "list[int]", "le": 5}, [1, 5], [999]),
+        ({"type": "list[str]", "min_items": 1, "max_items": 2}, ["a"], ["a", "b", "c"]),
+    ],
+)
+def test_constraints_apply_to_list_items(
+    spec: dict[str, object], good: object, bad: object
+) -> None:
+    model = _arg_model(spec)
+    model.model_validate({"x": good})
+    with pytest.raises(ValidationError):
+        model.model_validate({"x": bad})
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"type": "int", "pattern": "^1$"},
+        {"type": "float", "max_length": 3},
+        {"type": "str", "ge": 0},
+        {"type": "str", "min_items": 1},
+        {"type": "bool", "min_length": 1},
+        {"type": "bool", "le": 1},
+        {"type": "list[str]", "ge": 0},
+        {"type": "list[int]", "pattern": "^1$"},
+    ],
+)
+def test_constraints_that_cannot_apply_fail_loudly(spec: dict[str, object]) -> None:
+    # A constraint that would be silently ignored is as dangerous as a typo.
+    with pytest.raises(PolicyError, match="does not apply"):
+        Policy.from_dict({"tools": {"t": {"mode": "allow", "args": {"x": spec}}}})

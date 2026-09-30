@@ -53,9 +53,12 @@ policy.fingerprint()  # SHA-256, recorded with every decision
 | `required` | all | Default `true`. |
 | `default` | all | Value used when not required and not given. |
 | `choices` | all | Allowed values (for lists, allowed values of each item). |
-| `min_length`, `max_length`, `pattern` | `str` | String constraints (`pattern` is a regular expression). |
-| `ge`, `le` | `int`, `float` | Numeric bounds. |
+| `min_length`, `max_length`, `pattern` | `str`, `list[str]` | String constraints; for a list, each item must meet them. `pattern` is a regular expression that is *searched for*, not matched against the whole value: write `^...$` to anchor it. |
+| `ge`, `le` | `int`, `float`, `list[int]`, `list[float]` | Numeric bounds; for a list, on each item. |
 | `min_items`, `max_items` | lists | List length bounds. |
+
+A constraint that cannot apply to the type (for example `pattern` on an `int`, or
+`ge` on a `list[str]`) is a `PolicyError`, not silently ignored.
 
 For anything richer (nested objects, dates, custom validators) use `args_model` with a
 pydantic model in Python. Set `model_config = ConfigDict(extra="forbid")` on it if
