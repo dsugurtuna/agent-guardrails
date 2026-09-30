@@ -12,6 +12,29 @@ All notable changes to this project are recorded here. The format follows
   that a live log still starts with the records anchored earlier. `audit head` prints
   the anchor. (`expected_head` only matches a log that has not grown since.)
 
+### Fixed (security review)
+
+- Recipient domains must be plain ASCII hostnames: NUL bytes, URL delimiters, empty
+  labels and Unicode could pass a `*.` allow-list entry. Malformed allow-list entries
+  are a `PolicyError`.
+- Tools receive exactly the arguments that were checked, even with an `args_model`
+  that excludes or re-serialises a field.
+- YAML constraints on list types apply to each item; constraints that cannot apply
+  to a type are refused instead of ignored.
+- Lone surrogates in arguments or tool names are blocked and audited instead of
+  crashing the guard.
+- De-duplication treats `10` and `10.0`, and differently written but identical
+  recipient lists, as the same action.
+- Redacted values no longer reach the audit log through block messages, allowed
+  calls no longer store secrets in `queue.db`, and new state files are owner-only.
+- The audit verifier rejects duplicate keys and `NaN` instead of accepting or
+  crashing.
+- `AGENT_GUARDRAILS_KILL` engages for any value except an explicit "off".
+- Approved actions are closed atomically; a shortened approval TTL applies to
+  approvals already given; decisions record the fingerprint of the policy that made
+  them; rejections record the state they actually overrode.
+- Budgets are compared without floating-point drift.
+
 ## [0.1.0] - not yet released
 
 ### Added
