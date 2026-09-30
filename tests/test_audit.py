@@ -155,3 +155,42 @@ def test_non_finite_numbers_are_reported_not_raised(tmp_path: Path, constant: st
     assert not result.ok and result.line == 1
     with pytest.raises(AuditIntegrityError):
         log.append("executed")
+
+
+def test_anchor_survives_honest_growth_but_not_truncation(tmp_path: Path) -> None:
+    # The realistic use of an anchor: record (count, head) somewhere else today,
+    # check tomorrow that the log still starts with exactly those records.
+    log = _log(tmp_path, 5)
+    anchor = log.head()
+    for i in range(3):
+        log.append("executed", tool="t", n=100 + i)  # honest growth since the anchor
+    assert verify_log(log.path, anchor=anchor).ok
+    assert log.verify(anchor=anchor).ok
+    assert not verify_log(log.path, expected_head=anchor[1]).ok  # exact check: log grew
+
+    lines = log.path.read_text().splitlines()
+    log.path.write_text("\n".join(lines[:4]) + "\n")  # cut back past the anchor
+    cut = verify_log(log.path, anchor=anchor)
+    assert not cut.ok and "anchor" in (cut.error or "")
+    for i in range(6):  # ...and the writer carries on, so the log is longer again
+        log.append("executed", tool="t", n=200 + i)
+    assert verify_log(log.path).ok  # the chain alone cannot tell
+    regrown = verify_log(log.path, anchor=anchor)
+    assert not regrown.ok and "anchor" in (regrown.error or "")
+
+
+def test_anchor_detects_a_rewritten_prefix(tmp_path: Path) -> None:
+    log = _log(tmp_path, 3)
+    anchor = log.head()
+    records = [json.loads(line) for line in log.path.read_text().splitlines()]
+    records[0]["n"] = 99
+    prev = GENESIS_HASH
+    for record in records:  # a careful forger recomputes every hash
+        record["prev_hash"] = prev
+        record["hash"] = record_hash(record)
+        prev = record["hash"]
+    log.path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    assert verify_log(log.path).ok
+    assert not verify_log(log.path, anchor=anchor).ok
+    assert verify_log(log.path, anchor=(0, GENESIS_HASH)).ok
+    assert not verify_log(log.path, anchor=(0, "f" * 64)).ok

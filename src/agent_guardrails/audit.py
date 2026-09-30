@@ -6,9 +6,11 @@ without the ``hash`` key). :func:`verify_log` recomputes the chain, so editing,
 deleting, inserting or reordering records is detected.
 
 What it cannot do on its own: detect that the *last* records were cut off, or that
-someone rewrote the whole file and recomputed every hash. For that, keep the head
-hash somewhere the writer cannot change (see ``expected_head``) and compare. That
-is why this is called tamper-*evident*, not tamper-proof.
+someone rewrote the whole file and recomputed every hash. For that, keep an anchor,
+the ``(record_count, head_hash)`` pair from :meth:`AuditLog.head`, somewhere the
+writer cannot change, and later check that the log still starts with exactly those
+records (``anchor=``). Records appended after the anchor are checked only by the
+chain, so anchor regularly. That is why this is tamper-*evident*, not tamper-proof.
 """
 
 from __future__ import annotations
@@ -212,9 +214,15 @@ class AuditLog:
         return seq, head
 
     def verify(
-        self, *, expected_head: str | None = None, expected_count: int | None = None
+        self,
+        *,
+        expected_head: str | None = None,
+        expected_count: int | None = None,
+        anchor: tuple[int, str] | None = None,
     ) -> VerificationResult:
-        return verify_log(self.path, expected_head=expected_head, expected_count=expected_count)
+        return verify_log(
+            self.path, expected_head=expected_head, expected_count=expected_count, anchor=anchor
+        )
 
 
 def verify_log(
@@ -222,18 +230,27 @@ def verify_log(
     *,
     expected_head: str | None = None,
     expected_count: int | None = None,
+    anchor: tuple[int, str] | None = None,
 ) -> VerificationResult:
     """Recompute the hash chain of the log at ``path``.
 
-    ``expected_head`` / ``expected_count`` are anchors kept outside the log (for
-    example, printed into a ticket or shipped to another system). With them,
-    truncation and whole-file rewrites are detected too.
+    Checks against values kept outside the log (for example, printed into a ticket
+    or shipped to another system), so that truncation and whole-file rewrites are
+    detected too:
+
+    - ``anchor=(count, head)``, as returned by :meth:`AuditLog.head` at some earlier
+      time: the log must still start with exactly those ``count`` records, the last
+      of which has hash ``head``. Records added since are allowed. Use this on a
+      live log.
+    - ``expected_head`` / ``expected_count``: the log must *end* exactly there. Any
+      record appended since, honest or not, makes the check fail.
     """
     p = Path(path)
     if not p.exists():
         return VerificationResult(False, 0, None, "audit log not found")
     prev = GENESIS_HASH
     count = 0
+    anchored = GENESIS_HASH if anchor is not None and anchor[0] == 0 else None
     with p.open("rb") as f:
         for lineno, raw in enumerate(f, start=1):
             if not raw.endswith(b"\n"):
@@ -264,6 +281,24 @@ def verify_log(
                 )
             prev = str(record["hash"])
             count += 1
+            if anchor is not None and count == anchor[0]:
+                anchored = prev
+    if anchor is not None:
+        if anchored is None:
+            return VerificationResult(
+                False,
+                count,
+                prev,
+                f"only {count} records, but the anchor was taken at {anchor[0]}: "
+                "records were removed",
+            )
+        if anchored != anchor[1]:
+            return VerificationResult(
+                False,
+                count,
+                prev,
+                f"the first {anchor[0]} records do not match the anchor: the log was rewritten",
+            )
     if expected_count is not None and count != expected_count:
         return VerificationResult(
             False, count, prev, f"expected {expected_count} records, found {count}"

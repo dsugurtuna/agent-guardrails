@@ -126,14 +126,29 @@ def _cmd_queue_decide(ctx: _Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
+def _anchor(text: str) -> tuple[int, str]:
+    count, sep, head = text.partition(":")
+    if not sep or not count.isdigit() or len(head) != 64:
+        raise argparse.ArgumentTypeError("expected RECORDS:HEAD, as printed by 'audit head'")
+    return int(count), head
+
+
 def _cmd_audit_verify(ctx: _Ctx, args: argparse.Namespace) -> int:
     path = Path(args.path) if args.path else ctx.home / "audit.jsonl"
-    result = verify_log(path, expected_head=args.expected_head, expected_count=args.expected_count)
+    result = verify_log(
+        path,
+        expected_head=args.expected_head,
+        expected_count=args.expected_count,
+        anchor=args.anchor,
+    )
     if result.ok:
         print(f"OK: {result.records} records, chain intact. Head: {result.head}")
-        if args.expected_head is None:
+        if args.anchor is not None:
+            print(f"The first {args.anchor[0]} records match the anchor.")
+        elif args.expected_head is None:
             print(
-                "Note: without --expected-head, truncation of the newest records is not detected."
+                "Note: without --anchor, removal of the newest records is not detected. "
+                "Keep the output of 'audit head' elsewhere and pass it as --anchor."
             )
         return 0
     where = f" at line {result.line}" if result.line else ""
@@ -144,7 +159,7 @@ def _cmd_audit_verify(ctx: _Ctx, args: argparse.Namespace) -> int:
 def _cmd_audit_head(ctx: _Ctx, args: argparse.Namespace) -> int:
     path = Path(args.path) if args.path else ctx.home / "audit.jsonl"
     count, head = AuditLog(path).head()
-    print(json.dumps({"records": count, "head": head}))
+    print(json.dumps({"records": count, "head": head, "anchor": f"{count}:{head}"}))
     return 0
 
 
@@ -215,7 +230,16 @@ def build_parser() -> argparse.ArgumentParser:
     asub = audit.add_subparsers(dest="audit_cmd", required=True)
     averify = asub.add_parser("verify", help="recompute the hash chain")
     averify.add_argument("path", nargs="?", help="log path (default: <home>/audit.jsonl)")
-    averify.add_argument("--expected-head", default=None, help="anchor hash kept elsewhere")
+    averify.add_argument(
+        "--anchor",
+        type=_anchor,
+        default=None,
+        metavar="RECORDS:HEAD",
+        help="from an earlier 'audit head': the log must still start with those records",
+    )
+    averify.add_argument(
+        "--expected-head", default=None, help="the log must end exactly at this hash"
+    )
     averify.add_argument("--expected-count", type=int, default=None)
     averify.set_defaults(func=_cmd_audit_verify)
     ahead = asub.add_parser("head", help="print record count and head hash, for anchoring")

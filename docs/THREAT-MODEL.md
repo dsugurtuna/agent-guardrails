@@ -41,7 +41,7 @@ a shell, or a general-purpose code-execution tool, the guard can be bypassed.
 | Approved arguments changed before execution | A bug or a person edits the queued row after approval | The approval is bound to a SHA-256 digest of the arguments; a mismatch blocks execution. A policy change that would alter the arguments also blocks it | `test_approvals.py` |
 | Argument smuggling | `"a@evil.test" <b@example.com>`; `a@evil.test\x00.example.org` or `a@evil.test#.example.org` against a `*.example.org` entry; an extra `bcc` field; a negative payment amount to "refund" the budget | Addresses must parse unambiguously (one address per `@`), contain no control or invisible characters, and have a plain ASCII hostname as the domain; schemas forbid unknown fields; cost fields must be finite and non-negative | `test_checks.py`, `test_limits.py` |
 | Races between parallel callers | Two workers both squeeze under the last unit of budget | Check-and-reserve inside one `BEGIN IMMEDIATE` SQLite transaction; compare-and-set when claiming an approved action | `test_concurrency.py` |
-| Silent edits to the record | Someone deletes the entry showing an action ran, or reorders entries | Hash-chained JSONL audit log; `audit verify` detects edits, deletions, insertions and reordering | `test_audit.py`, `test_audit_properties.py` |
+| Silent edits to the record | Someone deletes the entry showing an action ran, or reorders entries | Hash-chained JSONL audit log; `audit verify` detects edits, deletions, insertions, reordering and ambiguous records (duplicate keys); an anchor kept elsewhere (`audit head`, later `audit verify --anchor`) also detects removal of the newest records and whole-file rewrites | `test_audit.py`, `test_audit_properties.py` |
 | Secrets in logs and tool results | An API key in tool arguments; a password inside an exception message | Redaction of named fields (defaults plus per-tool) and a redaction hook; only the exception *type* goes back to the model and into the log | `test_modes.py` |
 | An agent misbehaving right now | Reports of odd messages going out | Kill switch (environment variable, flag file or API), checked on every call, before every approved action and immediately before each tool function runs | `test_killswitch.py` |
 
@@ -64,10 +64,13 @@ Being clear about this matters more than the list above.
 - **Bypass paths.** Anything the agent can reach without going through the guard.
 - **A compromised host.** Anyone with write access to the SQLite file can mark
   actions approved. Anyone with write access to the audit log can rewrite it and
-  recompute every hash; only an anchor kept elsewhere (`audit head`, then
-  `audit verify --expected-head`) detects that, and truncation of the newest
-  records. Anyone who can edit the policy file can change the policy (the
-  fingerprint in each record shows when it changed).
+  recompute every hash; only an anchor kept elsewhere (`audit head`, then later
+  `audit verify --anchor RECORDS:HEAD`) detects that, and truncation of the newest
+  records. An anchor covers only the records written before it was taken: records
+  appended since are protected by the chain alone, and someone who can write to the
+  log can append well-formed forged records after the anchor. Anchor regularly, to
+  storage the application cannot write. Anyone who can edit the policy file can
+  change the policy (the fingerprint in each record shows when it changed).
 - **Reviewer error and approval fatigue.** Approvals can be rubber-stamped. Keep
   `approve` mode for actions that deserve a human, cap the queue with `max_pending`,
   and review full arguments with `queue show`.

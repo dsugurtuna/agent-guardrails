@@ -6,6 +6,12 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `verify_log(anchor=(count, head))` and `audit verify --anchor RECORDS:HEAD`: check
+  that a live log still starts with the records anchored earlier. `audit head` prints
+  the anchor. (`expected_head` only matches a log that has not grown since.)
+
 ## [0.1.0] - not yet released
 
 ### Added

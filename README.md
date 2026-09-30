@@ -32,7 +32,7 @@ Every tool call goes through a `Guard`, which applies a declarative policy:
 | **Durable approval queue** | SQLite: pending, approved, rejected, expired, executed. Approvals have a time-to-live. |
 | **Execution-time re-validation** | An approved action is re-checked against the *current* policy, allow-list, budget, kill switch and expiry, and its arguments must still match what was approved. |
 | **Idempotency** | Identical actions (normalised arguments) within a window are not repeated, so a retrying agent cannot send the same reminder twice. |
-| **Tamper-evident audit log** | Append-only JSONL, each record carrying the SHA-256 of the previous one. `verify` detects edits, deletions, insertions and reordering. Secrets are redacted. |
+| **Tamper-evident audit log** | Append-only JSONL, each record carrying the SHA-256 of the previous one. `verify` detects edits, deletions, insertions and reordering; with an anchor kept elsewhere (`audit head`), also removal of the newest records and whole-file rewrites. Secrets are redacted. |
 | **Kill switch** | Environment variable, flag file or API. Blocks everything, including approved actions. |
 | **Model-friendly results** | Every call returns an `Outcome` whose text tells the model what happened ("queued for human approval, do not retry"). |
 | **Claude adapter** (optional) | Runs guarded tools inside a Claude tool-use loop and returns sensible `tool_result` blocks. |
@@ -117,7 +117,8 @@ A reviewer, in another terminal:
 agent-guardrails queue list
 agent-guardrails queue show act_...            # full arguments, before deciding
 agent-guardrails queue approve act_... --by alice
-agent-guardrails audit verify
+agent-guardrails audit head                     # keep the "anchor" value somewhere else
+agent-guardrails audit verify --anchor 12:9f...  # later: the log still starts with those records
 ```
 
 Back in the application, which holds the credentials and the tool functions:
@@ -223,8 +224,9 @@ The short version; [`docs/WHY.md`](docs/WHY.md) gives the reasoning for each.
 - **Outcomes, not exceptions.** The agent loop needs something to tell the model.
 - **SQLite with one check-and-reserve transaction.** Limits hold under concurrency with
   nothing extra to deploy.
-- **Hash chain plus an anchor.** Detects edits without keys or services; keep the head
-  hash elsewhere to catch truncation or a full rewrite.
+- **Hash chain plus an anchor.** Detects edits without keys or services; keep the output
+  of `audit head` elsewhere and check against it later (`audit verify --anchor`) to
+  catch truncation or a full rewrite, even after the log has grown.
 - **Deciding is separate from doing.** The CLI records decisions and never runs tools;
   the application that holds the credentials runs approved actions.
 

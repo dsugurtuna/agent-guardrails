@@ -98,3 +98,24 @@ def test_home_from_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     _queued(tmp_path)
     monkeypatch.setenv("AGENT_GUARDRAILS_HOME", str(tmp_path))
     assert main(["queue", "list", "--json"]) == 0
+
+
+def test_audit_verify_against_an_older_anchor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    guard, _, _ = _queued(tmp_path)
+    home = ["--home", str(tmp_path)]
+    assert main([*home, "audit", "head"]) == 0
+    anchor = json.loads(capsys.readouterr().out)["anchor"]
+    guard.call("send", {"to": "b@example.com"})  # the log grows after anchoring
+    assert main([*home, "audit", "verify", "--anchor", anchor]) == 0
+    assert "anchor" in capsys.readouterr().out
+    log = tmp_path / "audit.jsonl"
+    log.write_text("")  # wiped, then the application carries on writing
+    guard.call("send", {"to": "c@example.com"})
+    guard.call("send", {"to": "d@example.com"})
+    assert main([*home, "audit", "verify", "--anchor", anchor]) == 1
+    assert "anchor" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as info:
+        main([*home, "audit", "verify", "--anchor", "not-an-anchor"])
+    assert info.value.code == 2

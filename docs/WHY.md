@@ -78,7 +78,9 @@ Because it needs no keys and no service, and any change to a record, any deletio
 insertion or reordering, breaks the chain in a way `audit verify` reports with a line
 number. Its limit is stated plainly: someone who can rewrite the whole file can
 recompute every hash, and cutting off the newest records leaves a valid chain. Both
-are caught by keeping the head hash somewhere else (`audit head`), which is cheap.
+are caught by keeping an anchor (the record count and head hash from `audit head`)
+somewhere else, which is cheap, and later checking that the log still starts with
+those records (`audit verify --anchor`), however much it has grown since.
 Tamper-evident, not tamper-proof.
 
 **Why write the log as ASCII-only JSON lines?**
