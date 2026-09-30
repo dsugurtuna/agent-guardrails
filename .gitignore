@@ -25,3 +25,7 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Demo state created by the examples
+/demo-state/
+/claude-demo/

@@ -1,0 +1,56 @@
+# Illustrative policy for a generic email and calendar assistant.
+# Read freely, write carefully: reading the calendar is allowed; creating events is
+# allowed within limits; replies are drafts only; sending email needs a human.
+version: 1
+default_mode: block          # anything not listed here is refused
+
+budgets:
+  "*": {limit: 2, window_seconds: 86400}   # e.g. two paid SMS credits per agent per day
+
+redact_fields: [password, token, api_key, secret, authorization]
+
+tools:
+  list_events:
+    mode: allow
+    args:
+      day: {type: str, pattern: '^\d{4}-\d{2}-\d{2}$'}
+
+  create_event:
+    mode: allow
+    args:
+      title: {type: str, max_length: 120}
+      start: {type: str, pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$'}
+      attendees: {type: "list[str]", max_items: 10, required: false, default: []}
+    recipients:
+      fields: [attendees]
+      allowed_domains: [example.com]
+    rate_limit: {max_calls: 20, window_seconds: 3600}
+
+  draft_reply:
+    mode: draft
+
+  send_email:
+    mode: approve
+    args:
+      to: {type: "list[str]", min_items: 1}
+      subject: {type: str, max_length: 200}
+      body: {type: str, max_length: 5000}
+    recipients:
+      fields: [to]
+      allowed_domains: [example.com, "*.example.com"]
+      max_recipients: 5
+    approval_ttl_seconds: 3600      # an approval older than an hour is stale
+    dedupe_window_seconds: 86400    # the same email is not sent twice in a day
+    max_pending: 20
+    redact_fields: [body]           # keep message bodies out of the audit log
+
+  send_sms:
+    mode: allow
+    args:
+      to: {type: str, pattern: '^\+44\d{10}$'}
+      text: {type: str, max_length: 160}
+    cost: {fixed: 1}
+    redact_fields: [text]
+
+  delete_event:
+    mode: block
