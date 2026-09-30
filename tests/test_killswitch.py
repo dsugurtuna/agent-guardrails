@@ -109,3 +109,22 @@ def test_last_moment_check_before_running_the_tool(
     assert backend.calls == []
     assert outcome.action_id is not None
     assert guard.store.get(outcome.action_id).status is ActionState.BLOCKED
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE ", "yes", "stop", "engaged", "y", "enabled"])
+def test_env_var_engages_unless_explicitly_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    # An operator in an incident types whatever comes to mind. Anything that is not
+    # clearly "off" must stop the agent: a kill switch fails closed.
+    monkeypatch.setenv("AGENT_GUARDRAILS_KILL", value)
+    status = KillSwitch(flag_file=tmp_path / "KILL").status()
+    assert status.engaged and status.source == "env"
+
+
+@pytest.mark.parametrize("value", ["", "  ", "0", "false", "False", "no", "off", " OFF "])
+def test_env_var_explicitly_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("AGENT_GUARDRAILS_KILL", value)
+    assert not KillSwitch(flag_file=tmp_path / "KILL").engaged

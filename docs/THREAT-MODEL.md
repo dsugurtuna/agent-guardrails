@@ -43,7 +43,7 @@ a shell, or a general-purpose code-execution tool, the guard can be bypassed.
 | Races between parallel callers | Two workers both squeeze under the last unit of budget | Check-and-reserve inside one `BEGIN IMMEDIATE` SQLite transaction; compare-and-set when claiming an approved action | `test_concurrency.py` |
 | Silent edits to the record | Someone deletes the entry showing an action ran, or reorders entries | Hash-chained JSONL audit log; `audit verify` detects edits, deletions, insertions, reordering and ambiguous records (duplicate keys); an anchor kept elsewhere (`audit head`, later `audit verify --anchor`) also detects removal of the newest records and whole-file rewrites | `test_audit.py`, `test_audit_properties.py` |
 | Secrets in logs and tool results | An API key in tool arguments; a password inside an exception message | Redaction of named fields (defaults plus per-tool) and a redaction hook; only the exception *type* goes back to the model and into the log | `test_modes.py` |
-| An agent misbehaving right now | Reports of odd messages going out | Kill switch (environment variable, flag file or API), checked on every call, before every approved action and immediately before each tool function runs | `test_killswitch.py` |
+| An agent misbehaving right now | Reports of odd messages going out | Kill switch (environment variable, flag file or API), checked on every call, before every approved action and immediately before each tool function runs. The variable fails closed: any value that is not clearly "off" engages it | `test_killswitch.py` |
 
 ## What it does not defend against
 

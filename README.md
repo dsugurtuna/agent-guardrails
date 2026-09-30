@@ -33,7 +33,7 @@ Every tool call goes through a `Guard`, which applies a declarative policy:
 | **Execution-time re-validation** | An approved action is re-checked against the *current* policy, allow-list, budget, kill switch and expiry, and its arguments must still match what was approved. |
 | **Idempotency** | Identical actions (normalised arguments) within a window are not repeated, so a retrying agent cannot send the same reminder twice. |
 | **Tamper-evident audit log** | Append-only JSONL, each record carrying the SHA-256 of the previous one. `verify` detects edits, deletions, insertions and reordering; with an anchor kept elsewhere (`audit head`), also removal of the newest records and whole-file rewrites. Secrets are redacted. |
-| **Kill switch** | Environment variable, flag file or API. Blocks everything, including approved actions. |
+| **Kill switch** | Environment variable (`AGENT_GUARDRAILS_KILL`: any value except empty, `0`, `false`, `no` or `off` engages it), flag file or API. Blocks everything, including approved actions. |
 | **Model-friendly results** | Every call returns an `Outcome` whose text tells the model what happened ("queued for human approval, do not retry"). |
 | **Claude adapter** (optional) | Runs guarded tools inside a Claude tool-use loop and returns sensible `tool_result` blocks. |
 | **CLI** | `agent-guardrails queue list/show/approve/reject`, `audit verify/head`, `kill on/off/status`. |

@@ -3,7 +3,9 @@
 Three independent ways to engage it, because the person who needs to stop an agent
 may not have access to the same place as the person who deployed it:
 
-- an environment variable (set at deploy time; cannot be cleared by the process),
+- an environment variable (set at deploy time; cannot be cleared by the process).
+  Any value engages it except an empty one or an explicit "off" (``0``, ``false``,
+  ``no``, ``off``): an operator who types ``stop`` in an incident must not be ignored,
 - a flag file (shared by the app, workers and the CLI),
 - an in-process API call.
 
@@ -21,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_ENV_VAR = "AGENT_GUARDRAILS_KILL"
-_TRUTHY = {"1", "true", "yes", "on"}
+_OFF = {"", "0", "false", "no", "off"}
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,7 @@ class KillSwitch:
     def status(self) -> KillSwitchStatus:
         if self.env_var:
             value = os.environ.get(self.env_var, "")
-            if value.strip().lower() in _TRUTHY:
+            if value.strip().lower() not in _OFF:  # fail closed on unrecognised values
                 return KillSwitchStatus(True, "env", f"environment variable {self.env_var} is set")
         if self.flag_file is not None and self.flag_file.exists():
             return KillSwitchStatus(True, "file", self._read_reason(self.flag_file))
