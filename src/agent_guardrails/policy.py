@@ -91,10 +91,11 @@ class ArgSpec(_Strict):
 
     def to_field(self) -> tuple[Any, Any]:
         py_type: Any = _PY_TYPES[self.type]
-        if self.choices is not None:
-            py_type = Literal[tuple(self.choices)]
-        constraints: dict[str, Any] = {}
         is_list = self.type.startswith("list")
+        if self.choices is not None:
+            allowed: Any = Literal[tuple(self.choices)]
+            py_type = list[allowed] if is_list else allowed
+        constraints: dict[str, Any] = {}
         if self.type == "str":
             for key in ("min_length", "max_length", "pattern"):
                 if getattr(self, key) is not None:

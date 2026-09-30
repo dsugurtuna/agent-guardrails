@@ -117,3 +117,14 @@ def test_policy_is_immutable() -> None:
     policy = Policy.from_yaml(YAML)
     with pytest.raises(ValidationError):
         policy.default_mode = Mode.DRAFT  # type: ignore[misc]
+
+
+def test_choices_on_lists_apply_to_items() -> None:
+    policy = Policy.from_yaml(
+        'tools: {t: {mode: allow, args: {tags: {type: "list[str]", choices: [a, b]}}}}\n'
+    )
+    model = policy.tools["t"].schema_model
+    assert model is not None
+    assert model.model_validate({"tags": ["a", "b"]}).model_dump() == {"tags": ["a", "b"]}
+    with pytest.raises(ValidationError):
+        model.model_validate({"tags": ["c"]})
