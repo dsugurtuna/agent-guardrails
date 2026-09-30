@@ -25,7 +25,7 @@ import json
 import os
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,7 +44,7 @@ from .errors import ApprovalExpiredError, ConfigurationError
 from .killswitch import KillSwitch
 from .outcomes import TRANSIENT_REASONS, Outcome, Reason, Status
 from .policy import Mode, Policy, ToolPolicy
-from .redaction import RedactHook, Redactor
+from .redaction import RedactHook, Redactor, scrub
 from .store import ActionRecord, ActionState, ActionStore, Tx
 
 HOME_ENV = "AGENT_GUARDRAILS_HOME"
@@ -250,10 +250,18 @@ class Guard:
         message: str,
         args: Any,
         action_id: str | None = None,
+        *,
+        hidden: Iterable[str] = (),
     ) -> Outcome:
+        """Audit and return a block. ``hidden``: redacted values to keep out of the log.
+
+        The model gets the full message (it sent those values); the audit record gets
+        the message with every redacted value removed, since details quote arguments.
+        """
         message = utf8_safe(message)  # details can quote malformed input back
+        detail = scrub(message, hidden)
         self._audit(
-            "blocked", **ctx, action_id=action_id, reason=str(reason), detail=message, args=args
+            "blocked", **ctx, action_id=action_id, reason=str(reason), detail=detail, args=args
         )
         return Outcome(Status.BLOCKED, ctx["tool"], message, action_id=action_id, reason=reason)
 
@@ -290,6 +298,8 @@ class Guard:
         mode = policy.mode_for(name)
         redactor = self._redactor(tool)
         raw: dict[str, Any] = dict(args or {})
+        hidden: set[str] = set()
+        logged_raw = redactor.redact(raw, hidden)
         ctx: dict[str, Any] = {
             "tool": name,
             "agent_id": agent_id or self.agent_id,
@@ -300,19 +310,19 @@ class Guard:
         ks = self.kill_switch.status()
         if ks.engaged:
             msg = f"the kill switch is engaged ({ks.reason}); no actions are being taken."
-            return self._block(ctx, Reason.KILL_SWITCH, msg, redactor.redact(raw))
+            return self._block(ctx, Reason.KILL_SWITCH, msg, logged_raw)
         if mode is Mode.BLOCK:
             if tool is None:
                 msg = f"'{name}' is not in the policy, so it is blocked by default."
-                return self._block(ctx, Reason.UNKNOWN_TOOL, msg, redactor.redact(raw))
+                return self._block(ctx, Reason.UNKNOWN_TOOL, msg, logged_raw)
             msg = f"'{name}' is blocked by policy."
-            return self._block(ctx, Reason.TOOL_BLOCKED, msg, redactor.redact(raw))
+            return self._block(ctx, Reason.TOOL_BLOCKED, msg, logged_raw)
 
         effective = tool if tool is not None else ToolPolicy(mode=mode)
         reg = self._lookup(name)
         prepared = self._prepare(ctx, policy, effective, reg, raw)
         if isinstance(prepared, Violation):
-            return self._block(ctx, prepared.reason, prepared.detail, redactor.redact(raw))
+            return self._block(ctx, prepared.reason, prepared.detail, logged_raw, hidden=hidden)
 
         if mode is Mode.DRAFT:
             render = reg.preview if reg is not None and reg.preview is not None else default_preview
@@ -586,7 +596,8 @@ class Guard:
         policy = self._policy
         tool = policy.tool(rec.tool)
         mode = policy.mode_for(rec.tool)
-        logged = self._redactor(tool).redact(rec.args)
+        hidden: set[str] = set()
+        logged = self._redactor(tool).redact(rec.args, hidden)
         ctx: dict[str, Any] = {
             "tool": rec.tool,
             "agent_id": rec.agent_id,
@@ -605,7 +616,7 @@ class Guard:
                     reason=str(reason),
                     finished_at=now,
                 )
-            return self._block(ctx, reason, message, logged, action_id)
+            return self._block(ctx, reason, message, logged, action_id, hidden=hidden)
 
         if rec.status is not ActionState.APPROVED:
             msg = f"action {action_id} is {rec.status}, not approved; it was not run."
