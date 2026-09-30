@@ -141,12 +141,10 @@ def run_tool_loop(
     ``client.messages.create`` instead. Extra keyword arguments (``system``,
     ``output_config``, ...) are passed through unchanged.
 
-    The loop stops, without running tools, when:
-
-    - ``stop_reason`` is ``"refusal"``;
-    - ``stop_reason`` is ``"max_tokens"`` and the response contains a tool call
-      (its input may be truncated; retry with a larger ``max_tokens``);
-    - ``max_turns`` requests have been made (``stop_reason`` is then ``"max_turns"``).
+    The loop stops *without running that turn's tools* when ``stop_reason`` is
+    ``"refusal"``, or is ``"max_tokens"`` while the response contains a tool call (its
+    input may be truncated; retry with a larger ``max_tokens``). It also stops after
+    ``max_turns`` requests, with ``stop_reason`` set to ``"max_turns"``.
     """
     history = list(messages)
     outcomes: list[Outcome] = []
