@@ -25,6 +25,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from ._files import create_private_file, make_private_dir
 from .errors import ActionNotFoundError, ApprovalExpiredError, InvalidTransitionError
 
 
@@ -215,7 +216,8 @@ class ActionStore:
     def __init__(self, path: str | Path, *, timeout: float = 30.0) -> None:
         self.path = Path(path)
         self.timeout = timeout
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        make_private_dir(self.path.parent)
+        create_private_file(self.path)  # SQLite gives its -wal and -shm files the same mode
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)

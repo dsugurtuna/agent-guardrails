@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from ._canonical import canonical_json, sha256_hex, utf8_safe
+from ._files import make_private_dir, open_private_append
 from .errors import AuditIntegrityError
 
 try:  # POSIX advisory locks serialise writers across processes.
@@ -158,8 +159,8 @@ class AuditLog:
         clash = RESERVED_KEYS.intersection(fields)
         if clash:
             raise ValueError(f"reserved audit keys cannot be set: {sorted(clash)}")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with _process_lock, self.path.open("a+b") as f:
+        make_private_dir(self.path.parent)
+        with _process_lock, open_private_append(self.path) as f:
             if fcntl is not None:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:

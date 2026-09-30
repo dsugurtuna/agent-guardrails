@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -248,3 +250,19 @@ def test_audit_records_approval_chain(make_guard: MakeGuard, email_policy: Polic
     assert len(digests) == 1  # the same arguments from request to execution
     assert mine[1]["by"] == "alice"
     assert mine[2]["approved_by"] == "alice"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_state_files_are_private_to_their_owner(tmp_path: Path, email_policy: Policy) -> None:
+    # queue.db holds the full arguments of queued actions; neither it nor the audit log
+    # should be readable by other users of the host, whatever the umask.
+    home = tmp_path / "state"
+    old_umask = os.umask(0o022)
+    try:
+        guard = Guard(email_policy, home=home)
+        _queue(guard)
+    finally:
+        os.umask(old_umask)
+    for path in (home, home / "queue.db", home / "audit.jsonl", *home.glob("queue.db-*")):
+        mode = stat.S_IMODE(path.stat().st_mode)
+        assert mode & 0o077 == 0, f"{path.name} is {oct(mode)}"

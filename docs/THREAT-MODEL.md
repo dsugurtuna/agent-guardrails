@@ -22,7 +22,7 @@ kill switch.
 | The policy file | Yes | Written and reviewed by the people who own the deployment. Its SHA-256 fingerprint is recorded with every decision. |
 | The guard process and tool functions | Yes | Your code. The guard cannot protect a tool the agent can reach by another path. |
 | The reviewer | Yes, but fallible | People approve things they should not, especially when tired or rushed. |
-| Queue database, audit log, kill-switch flag | Protected by OS permissions | The library cannot defend them against someone who already has write access to the host (see "What it does not defend against"). |
+| Queue database, audit log, kill-switch flag | Protected by OS permissions | A new state directory, queue database and audit log are created readable by their owner only (0700 and 0600 on POSIX); existing ones keep their permissions. The library cannot defend them against someone who already has write access to the host (see "What it does not defend against"). |
 
 The key assumption is **complete mediation**: the only way for the agent to cause a
 side effect is through a guarded tool. If the agent also holds raw API credentials,
