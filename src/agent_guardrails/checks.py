@@ -1,0 +1,156 @@
+"""Stateless checks: argument schema, recipients and cost.
+
+These run on every call, in every mode, and again at execution time for
+approved actions. They need no database, so they are easy to test exhaustively.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass
+from email.utils import getaddresses
+from typing import Any
+
+from pydantic import BaseModel, ValidationError
+
+from ._canonical import canonical_json
+from .outcomes import Reason
+from .policy import Cost, RecipientRule, ToolPolicy
+
+
+@dataclass(frozen=True)
+class Violation:
+    reason: Reason
+    detail: str
+
+
+@dataclass(frozen=True)
+class ValidatedArgs:
+    """Arguments after validation.
+
+    ``stored`` is the JSON form that is hashed, queued and audited. ``call`` is what
+    the tool function receives. Both come from the same validated object, so what was
+    checked (and approved) is exactly what runs.
+    """
+
+    stored: dict[str, Any]
+    call: dict[str, Any]
+
+
+def _summarise(exc: ValidationError, limit: int = 5) -> str:
+    # Only locations and messages: pydantic's error dicts also carry the raw input,
+    # which may be sensitive, so it is deliberately left out.
+    parts = []
+    for err in exc.errors()[:limit]:
+        loc = ".".join(str(p) for p in err["loc"]) or "(root)"
+        parts.append(f"{loc}: {err['msg']}")
+    more = len(exc.errors()) - limit
+    if more > 0:
+        parts.append(f"... and {more} more")
+    return "; ".join(parts)
+
+
+def validate_arguments(
+    tool: ToolPolicy | None, args: Mapping[str, Any]
+) -> tuple[ValidatedArgs | None, Violation | None]:
+    model: type[BaseModel] | None = tool.schema_model if tool is not None else None
+    if model is None:
+        plain = dict(args)
+        try:
+            canonical_json(plain)
+        except (TypeError, ValueError):
+            return None, Violation(Reason.INVALID_ARGUMENTS, "arguments must be JSON-serialisable")
+        return ValidatedArgs(stored=plain, call=dict(plain)), None
+    try:
+        instance = model.model_validate(dict(args))
+    except ValidationError as exc:
+        return None, Violation(Reason.INVALID_ARGUMENTS, _summarise(exc))
+    stored = instance.model_dump(mode="json")
+    call = {name: getattr(instance, name) for name in type(instance).model_fields}
+    return ValidatedArgs(stored=stored, call=call), None
+
+
+def domain_allowed(domain: str, allowed: list[str]) -> bool:
+    domain = domain.lower().rstrip(".")
+    for pattern in allowed:
+        if pattern == "*":
+            return True
+        if pattern.startswith("*."):
+            if domain.endswith(pattern[1:]):
+                return True
+        elif domain == pattern:
+            return True
+    return False
+
+
+def extract_addresses(value: Any) -> list[str]:
+    """Parse one field's value into bare addresses. Raises ``ValueError`` if ambiguous.
+
+    Why so strict? Address parsing is a classic source of bypasses (quoted local
+    parts, display names containing another address, stray commas). Anything that
+    does not parse to exactly one ``local@domain`` per ``@`` is rejected: fail closed.
+    """
+    if value is None:
+        return []
+    raw_items = [value] if isinstance(value, str) else value
+    if not isinstance(raw_items, list):
+        raise ValueError("recipient field must be a string or a list of strings")
+    addresses: list[str] = []
+    for raw in raw_items:
+        if not isinstance(raw, str):
+            raise ValueError("recipient entries must be strings")
+        parsed = [addr for _name, addr in getaddresses([raw]) if addr]
+        if raw.count("@") != len(parsed) or not parsed:
+            raise ValueError(f"could not parse recipient {raw!r} unambiguously")
+        for addr in parsed:
+            local, sep, domain = addr.rpartition("@")
+            if not sep or not local or not domain or any(c.isspace() for c in addr):
+                raise ValueError(f"malformed address {addr!r}")
+            addresses.append(addr)
+    return addresses
+
+
+def check_recipients(rule: RecipientRule | None, args: Mapping[str, Any]) -> Violation | None:
+    if rule is None:
+        return None
+    addresses: list[str] = []
+    for field in rule.fields:
+        try:
+            addresses += extract_addresses(args.get(field))
+        except ValueError as exc:
+            return Violation(Reason.RECIPIENT_NOT_ALLOWED, str(exc))
+    if rule.max_recipients is not None and len(addresses) > rule.max_recipients:
+        return Violation(
+            Reason.TOO_MANY_RECIPIENTS,
+            f"{len(addresses)} recipients exceeds the limit of {rule.max_recipients}",
+        )
+    refused = sorted(
+        {a for a in addresses if not domain_allowed(a.rpartition("@")[2], rule.allowed_domains)}
+    )
+    if refused:
+        return Violation(
+            Reason.RECIPIENT_NOT_ALLOWED,
+            f"recipient domain not on the allow-list: {', '.join(refused)}",
+        )
+    return None
+
+
+def compute_cost(cost: Cost | None, args: Mapping[str, Any]) -> tuple[float, Violation | None]:
+    if cost is None:
+        return 0.0, None
+    if cost.fixed is not None:
+        return cost.fixed, None
+    assert cost.field is not None  # guaranteed by the Cost validator  # noqa: S101
+    value = args.get(cost.field)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0, Violation(
+            Reason.INVALID_ARGUMENTS, f"cost field '{cost.field}' must be a number"
+        )
+    amount = float(value)
+    # A negative or non-finite amount would *increase* the remaining budget.
+    if not math.isfinite(amount) or amount < 0:
+        return 0.0, Violation(
+            Reason.INVALID_ARGUMENTS, f"cost field '{cost.field}' must be a finite number >= 0"
+        )
+    return amount, None
