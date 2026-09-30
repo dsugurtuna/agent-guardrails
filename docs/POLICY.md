@@ -19,7 +19,7 @@ policy.fingerprint()  # SHA-256, recorded with every decision
 | `version` | `1` | Schema version. |
 | `default_mode` | `block` | Mode for tools not listed under `tools`. `allow` is refused: unattended execution must be granted per tool. |
 | `tools` | `{}` | Per-tool policy, keyed by tool name. |
-| `budgets` | `{}` | Spend limits per agent id. The key `"*"` applies to agents not listed. Agents with no budget are unlimited. |
+| `budgets` | `{}` | Spend limits per agent id. The key `"*"` gives each agent that is not listed its own budget of that size (not one shared pool). Agents with no budget are unlimited. |
 | `redact_fields` | common secret names | Argument keys (case-insensitive, at any depth) replaced by `[REDACTED]` in the audit log; their values are also removed from the detail text of blocked-call records. Keys match exactly: `secret` does not cover `client_secret`, so list each name. |
 
 ### `budgets.<agent>`
@@ -98,3 +98,9 @@ kill switch, expiry, argument digest, current mode, registered function, argumen
 and recipients against the current policy, whether the current policy would change
 the arguments, then duplicates, rate limit and budget in one transaction, then a
 last kill-switch check, then the tool runs.
+
+Register the tool function in the process that queues actions as well as in the
+worker that runs them (or give the tool an `args` schema). Arguments are bound to the
+function signature before they are hashed, so a worker whose function adds default
+arguments the queuing process never saw would change the approved arguments, and the
+action is refused as `policy_changed` rather than run.

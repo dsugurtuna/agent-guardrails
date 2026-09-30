@@ -62,6 +62,15 @@ Being clear about this matters more than the list above.
 - **Reads.** Read tools are not controlled unless you wrap them, by design
   ("read freely"). Reading can still expose sensitive data to the model.
 - **Bypass paths.** Anything the agent can reach without going through the guard.
+- **Server-side tools in the Claude loop.** `run_tool_loop` guards the client-side
+  `tool_use` blocks it executes. Server tools (web search, web fetch, code execution)
+  and MCP connector tools run on Anthropic's side and never reach the guard, and a
+  fetched URL can carry data out. Leave them out of `tools` (and `mcp_servers`) for
+  agents that see sensitive data, or treat them as unguarded.
+- **Recipients hidden under another argument name.** A recipient rule checks only
+  the fields it names. With an `args` schema, unknown arguments are refused; without
+  one, a tool function that takes `**kwargs` can receive an address under any name.
+  Give every tool with a recipient rule an argument schema.
 - **Secrets in the queue database.** An action queued for approval keeps its full
   arguments in `queue.db`, including fields redacted from the audit log, because it
   must later run with its real arguments; `queue show` displays them to reviewers.
@@ -86,13 +95,21 @@ Being clear about this matters more than the list above.
 - **Paraphrased duplicates.** De-duplication catches identical actions, with
   whitespace, Unicode form, key order, number form (`10` and `10.0`) and recipients
   (case, order, repeats, display names, list or comma-separated string) normalised.
-  It does not catch the same message reworded.
+  It does not catch the same message reworded. The same normalisation is a
+  trade-off in the other direction: two calls that differ only in surrounding
+  whitespace or Unicode composition count as one, and identical calls from two
+  agent ids count as one. For tools where such differences matter (writing a file,
+  running code), set `dedupe_window_seconds: 0`.
 - **Ambiguous failures.** If a tool times out after the side effect happened, a
   retry may repeat it: failed actions are not de-duplicated (so genuine failures can
   be retried), although they do count towards rate limits and budgets. If the process
   dies mid-call, the action stays `executing`; identical retries are refused within
   the de-duplication window and allowed after it.
 - **Clock manipulation.** TTLs and windows use the system clock.
+- **Budgets follow agent ids.** Spend is counted per agent id, and the `"*"` budget
+  gives *each* unlisted agent its own allowance rather than one shared pool. The
+  application chooses agent ids (the model cannot), so an application that uses a
+  new id per conversation gets a new budget per conversation. Use stable ids.
 - **The kill switch is cooperative.** It stops actions that pass through a guard
   that checks it. It does not stop processes or revoke credentials; pair it with
   credential revocation in a real incident.

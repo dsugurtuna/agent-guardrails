@@ -165,7 +165,9 @@ print(result.text, [str(o.status) for o in result.outcomes])
 guard, returns all results in one message, flags blocked and failed calls with
 `is_error`, never runs tools on a `refusal` or on a `max_tokens` stop part-way through a
 tool call, and opts into server-side refusal fallbacks (`fallbacks="default"`); pass
-`server_side_fallback=False` to use the plain Messages endpoint. See
+`server_side_fallback=False` to use the plain Messages endpoint. Server-side tools
+(web search, web fetch, code execution) and MCP connector tools run on Anthropic's
+side and are not guarded; see the threat model. See
 [`examples/claude_assistant.py`](examples/claude_assistant.py) (needs credentials; the
 tests use a fake client).
 
