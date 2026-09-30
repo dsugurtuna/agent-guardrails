@@ -199,21 +199,23 @@ class Guard:
         self.agent_id = agent_id
         self._redact_hook = redact_hook
         self._tools: dict[str, _Registered] = {}
-        self._policy = policy
-        self._policy_hash = policy.fingerprint()
+        # The policy and its fingerprint are swapped together, as one tuple, and each
+        # call reads them once: a concurrent set_policy must never make a decision
+        # taken under one policy be recorded with the other's fingerprint.
+        self._active: tuple[Policy, str] = (policy, policy.fingerprint())
 
     # -- configuration ------------------------------------------------------------
 
     @property
     def policy(self) -> Policy:
-        return self._policy
+        return self._active[0]
 
     def set_policy(self, policy: Policy, *, by: str | None = None) -> None:
         """Swap the policy. Queued actions will be re-checked against the new one."""
-        old = self._policy_hash
-        self._policy = policy
-        self._policy_hash = policy.fingerprint()
-        self._audit("policy_changed", old_policy_hash=old, policy_hash=self._policy_hash, by=by)
+        new = (policy, policy.fingerprint())
+        old = self._active[1]
+        self._active = new
+        self._audit("policy_changed", old_policy_hash=old, policy_hash=new[1], by=by)
 
     def register(
         self, name: str, fn: Callable[..., Any], *, preview: PreviewFn | None = None
@@ -244,8 +246,8 @@ class Guard:
     def _now(self) -> float:
         return self._clock()
 
-    def _redactor(self, tool: ToolPolicy | None) -> Redactor:
-        base = Redactor(self._policy.redact_fields, self._redact_hook)
+    def _redactor(self, policy: Policy, tool: ToolPolicy | None) -> Redactor:
+        base = Redactor(policy.redact_fields, self._redact_hook)
         return base.with_fields(tool.redact_fields) if tool is not None else base
 
     # -- audit helpers ---------------------------------------------------------------
@@ -302,11 +304,12 @@ class Guard:
             label = utf8_safe(name) if isinstance(name, str) else repr(name)
             ctx0 = {"tool": label, "agent_id": agent_id or self.agent_id, "mode": "block"}
             msg = "the tool name is not a valid, non-empty string, so it is blocked."
-            return self._block(ctx0, Reason.UNKNOWN_TOOL, msg, self._redactor(None).redact(args))
-        policy = self._policy
+            logged = self._redactor(self.policy, None).redact(args)
+            return self._block(ctx0, Reason.UNKNOWN_TOOL, msg, logged)
+        policy, policy_hash = self._active
         tool = policy.tool(name)
         mode = policy.mode_for(name)
-        redactor = self._redactor(tool)
+        redactor = self._redactor(policy, tool)
         raw: dict[str, Any] = dict(args or {})
         hidden: set[str] = set()
         logged_raw = redactor.redact(raw, hidden)
@@ -314,7 +317,7 @@ class Guard:
             "tool": name,
             "agent_id": agent_id or self.agent_id,
             "mode": str(mode),
-            "policy_hash": self._policy_hash,
+            "policy_hash": policy_hash,
         }
 
         ks = self.kill_switch.status()
@@ -381,7 +384,7 @@ class Guard:
             cost=cost,
             key=dedupe_key(ctx["tool"], validated.stored, fields),
             args_digest=digest(validated.stored),
-            logged=self._redactor(tool).redact(validated.stored),
+            logged=self._redactor(policy, tool).redact(validated.stored),
         )
 
     def _check_limits(
@@ -611,16 +614,16 @@ class Guard:
         still acceptable in the world as it is (time-of-check vs time-of-use).
         """
         rec = self.store.get(action_id)
-        policy = self._policy
+        policy, policy_hash = self._active
         tool = policy.tool(rec.tool)
         mode = policy.mode_for(rec.tool)
         hidden: set[str] = set()
-        logged = self._redactor(tool).redact(rec.args, hidden)
+        logged = self._redactor(policy, tool).redact(rec.args, hidden)
         ctx: dict[str, Any] = {
             "tool": rec.tool,
             "agent_id": rec.agent_id,
             "mode": str(mode),
-            "policy_hash": self._policy_hash,
+            "policy_hash": policy_hash,
         }
         now = self._now()
 
@@ -690,7 +693,7 @@ class Guard:
                         status=ActionState.EXECUTING,
                         started_at=now,
                         cost=prepared.cost,
-                        policy_hash=self._policy_hash,
+                        policy_hash=policy_hash,
                     )
                 elif isinstance(found, ActionRecord) or found.reason not in TRANSIENT_REASONS:
                     # Close it in the same transaction as the check: done afterwards, it

@@ -6,6 +6,7 @@ of workers), so these tests exercise SQLite's locking, not a Python lock.
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import threading
 import time
@@ -281,3 +282,27 @@ def test_closing_reports_the_truth_when_another_worker_ran_it(tmp_path: Path) ->
     assert store.get(action_id).status is ActionState.EXECUTING
     assert outcome.reason is Reason.NOT_APPROVED  # not "recipient_not_allowed": it was not closed
     assert "not run" in outcome.message
+
+
+def test_each_decision_records_the_policy_it_was_made_under(tmp_path: Path) -> None:
+    # set_policy from another thread can land at any point during a call. The redact
+    # hook runs mid-call, so it can stand in for that thread deterministically.
+    old = Policy.from_yaml("tools: {ping: {mode: allow}}\n")
+    new = Policy.from_yaml("tools: {ping: {mode: block}}\n")
+    swapped: list[bool] = []
+
+    def swap_policy_meanwhile(key: str, value: Any) -> Any:
+        if not swapped:
+            swapped.append(True)
+            guard.set_policy(new, by="security-team")
+        return value
+
+    guard = Guard(old, home=tmp_path, redact_hook=swap_policy_meanwhile)
+    guard.register("ping", lambda n: n)
+    outcome = guard.call("ping", {"n": 1})
+    assert swapped == [True]
+    records = [json.loads(line) for line in guard.audit.path.read_text().splitlines()]
+    decision = next(r for r in records if r.get("tool") == "ping")
+    # The call was decided under the old policy (it ran), so it must say so.
+    assert outcome.status is Status.EXECUTED
+    assert decision["policy_hash"] == old.fingerprint()
