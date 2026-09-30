@@ -251,3 +251,33 @@ def test_malformed_arguments_are_blocked_and_still_audited(tmp_path: Path) -> No
     log = guard.audit.path.read_text()
     assert "<object>" in log and '"amount":"nan"' in log
     assert verify_log(guard.audit.path).ok
+
+
+def test_text_that_is_not_valid_unicode_is_blocked_and_audited(tmp_path: Path) -> None:
+    # JSON can carry a lone surrogate ("\ud800"), which cannot be encoded as UTF-8.
+    # It must be refused like any other malformed argument, not crash the guard.
+    policy = Policy.from_yaml(
+        "tools: {ping: {mode: allow}, typed: {mode: allow, args: {x: {type: str}}}}\n"
+    )
+    guard = Guard(policy, home=tmp_path)
+    ran: list[str] = []
+    guard.register("ping", lambda x: ran.append(x))
+    guard.register("typed", lambda x: ran.append(x))
+    bad = "abc\ud800"
+    assert guard.call("ping", {"x": bad}).reason is Reason.INVALID_ARGUMENTS
+    assert guard.call("typed", {"x": bad}).reason is Reason.INVALID_ARGUMENTS
+    assert guard.call("ping", {bad: "x"}).reason is Reason.INVALID_ARGUMENTS
+    assert guard.call("unknown", {"x": bad}).reason is Reason.UNKNOWN_TOOL
+    assert ran == []
+    result = verify_log(guard.audit.path)
+    assert result.ok and result.records == 4
+
+
+def test_malformed_tool_names_are_blocked_under_any_default_mode(tmp_path: Path) -> None:
+    guard = Guard(Policy.from_yaml("default_mode: approve\n"), home=tmp_path)
+    for name in ("send\udc00", None, 42, ""):
+        outcome = guard.call(name, {"x": 1})  # type: ignore[arg-type]
+        assert outcome.status is Status.BLOCKED, name
+        assert outcome.reason is Reason.UNKNOWN_TOOL
+    assert guard.pending() == []
+    assert verify_log(guard.audit.path).ok

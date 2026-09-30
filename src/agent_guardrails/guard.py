@@ -2,6 +2,7 @@
 
 Order of checks for a new call (cheapest and most absolute first):
 
+0. the tool name must be a non-empty string of valid Unicode
 1. kill switch
 2. mode (``block`` stops here; unknown tools get the policy's ``default_mode``)
 3. arguments: bound to the function signature, then validated against the schema
@@ -30,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ._canonical import canonical_json, dedupe_key, digest
+from ._canonical import canonical_json, dedupe_key, digest, utf8_safe
 from .audit import AuditLog
 from .checks import (
     ValidatedArgs,
@@ -250,6 +251,7 @@ class Guard:
         args: Any,
         action_id: str | None = None,
     ) -> Outcome:
+        message = utf8_safe(message)  # details can quote malformed input back
         self._audit(
             "blocked", **ctx, action_id=action_id, reason=str(reason), detail=message, args=args
         )
@@ -276,6 +278,13 @@ class Guard:
         self, name: str, args: Mapping[str, Any] | None = None, *, agent_id: str | None = None
     ) -> Outcome:
         """Apply the policy to one tool call and return what happened."""
+        if not isinstance(name, str) or not name or utf8_safe(name) != name:
+            # The name comes from the model. Anything that is not usable text cannot be
+            # in the policy, and must not reach the store or the hashes: block it.
+            label = utf8_safe(name) if isinstance(name, str) else repr(name)
+            ctx0 = {"tool": label, "agent_id": agent_id or self.agent_id, "mode": "block"}
+            msg = "the tool name is not a valid, non-empty string, so it is blocked."
+            return self._block(ctx0, Reason.UNKNOWN_TOOL, msg, self._redactor(None).redact(args))
         policy = self._policy
         tool = policy.tool(name)
         mode = policy.mode_for(name)

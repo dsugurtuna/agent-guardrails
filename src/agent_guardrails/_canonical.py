@@ -25,6 +25,19 @@ def canonical_json(obj: Any) -> str:
     )
 
 
+def utf8_safe(text: str) -> str:
+    """``text`` unchanged if it is valid Unicode; otherwise lone surrogates escaped.
+
+    JSON can carry a lone surrogate (``"\\ud800"``), which Python decodes into a
+    ``str`` that cannot be encoded as UTF-8, so it cannot be hashed or stored.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return text
+
+
 def sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

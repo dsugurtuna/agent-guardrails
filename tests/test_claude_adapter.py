@@ -223,3 +223,19 @@ def test_real_sdk_types_are_handled(
     assert outcomes[0].status is Status.EXECUTED
     assert results[0]["tool_use_id"] == "toolu_1"
     assert backend.calls == [("search_calendar", {"day": "fri"})]
+
+
+def test_invalid_unicode_in_tool_input_does_not_break_the_loop(
+    make_guard: MakeGuard, email_policy: Policy, backend: Backend
+) -> None:
+    guard = make_guard(email_policy)
+    results, outcomes = handle_tool_uses(
+        guard,
+        [
+            tool_use("t1", "search_calendar", day="mon\ud800"),
+            tool_use("t2", "search_calendar", day="tue"),
+        ],
+    )
+    assert [o.status for o in outcomes] == [Status.BLOCKED, Status.EXECUTED]
+    assert results[0]["is_error"] is True
+    assert backend.calls == [("search_calendar", {"day": "tue"})]

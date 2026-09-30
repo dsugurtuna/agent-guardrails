@@ -80,8 +80,8 @@ because `str.lower()` and IDNA do not map them the same way; use the `xn--` form
 
 ## Order of checks
 
-For a new call: kill switch, mode, arguments (bound to the function signature, then
-validated), recipients, cost; then per mode: `draft` returns a preview; `approve`
+For a new call: tool name (a non-empty string of valid Unicode), kill switch, mode,
+arguments (bound to the function signature, then validated), recipients, cost; then per mode: `draft` returns a preview; `approve`
 checks duplicates, `max_pending` and whether the cost exceeds the whole budget, then
 queues; `allow` checks duplicates, rate limit and budget and reserves the execution in
 one transaction, re-checks the kill switch, and runs.

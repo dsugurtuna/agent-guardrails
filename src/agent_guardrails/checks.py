@@ -51,30 +51,34 @@ def _summarise(exc: ValidationError, limit: int = 5) -> str:
     return "; ".join(parts)
 
 
+_NOT_JSON = "arguments must be JSON-serialisable, with finite numbers and valid Unicode text"
+
+
+def _is_json_text(value: Any) -> bool:
+    """Whether ``value`` serialises to canonical JSON that can be encoded as UTF-8."""
+    try:
+        canonical_json(value).encode("utf-8")
+    except (TypeError, ValueError):  # UnicodeEncodeError is a ValueError
+        return False
+    return True
+
+
 def validate_arguments(
     tool: ToolPolicy | None, args: Mapping[str, Any]
 ) -> tuple[ValidatedArgs | None, Violation | None]:
     model: type[BaseModel] | None = tool.schema_model if tool is not None else None
     if model is None:
         plain = dict(args)
-        try:
-            canonical_json(plain)
-        except (TypeError, ValueError):
-            return None, Violation(
-                Reason.INVALID_ARGUMENTS, "arguments must be JSON-serialisable with finite numbers"
-            )
+        if not _is_json_text(plain):
+            return None, Violation(Reason.INVALID_ARGUMENTS, _NOT_JSON)
         return ValidatedArgs(stored=plain, call=dict(plain)), None
     try:
         instance = model.model_validate(dict(args))
     except ValidationError as exc:
         return None, Violation(Reason.INVALID_ARGUMENTS, _summarise(exc))
     stored = instance.model_dump(mode="json")
-    try:
-        canonical_json(stored)  # rejects NaN and infinity, which pydantic accepts by default
-    except (TypeError, ValueError):
-        return None, Violation(
-            Reason.INVALID_ARGUMENTS, "arguments must be JSON-serialisable with finite numbers"
-        )
+    if not _is_json_text(stored):  # pydantic accepts NaN, infinity and lone surrogates
+        return None, Violation(Reason.INVALID_ARGUMENTS, _NOT_JSON)
     call = {name: getattr(instance, name) for name in type(instance).model_fields}
     return ValidatedArgs(stored=stored, call=call), None
 

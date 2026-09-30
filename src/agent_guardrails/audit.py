@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from ._canonical import canonical_json, sha256_hex
+from ._canonical import canonical_json, sha256_hex, utf8_safe
 from .errors import AuditIntegrityError
 
 try:  # POSIX advisory locks serialise writers across processes.
@@ -47,14 +47,17 @@ def json_safe(value: Any) -> Any:
     """Make a value loggable: non-JSON values become a type marker, never a crash.
 
     The audit log must be able to record a *blocked* call even when the call was
-    blocked precisely because its arguments were malformed.
+    blocked precisely because its arguments were malformed (including text that is
+    not valid Unicode, which is written with its lone surrogates escaped).
     """
-    if value is None or isinstance(value, str | bool | int):
+    if isinstance(value, str):
+        return utf8_safe(value)
+    if value is None or isinstance(value, bool | int):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else repr(value)
     if isinstance(value, dict):
-        return {str(k): json_safe(v) for k, v in value.items()}
+        return {utf8_safe(str(k)): json_safe(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [json_safe(v) for v in value]
     return f"<{type(value).__name__}>"
