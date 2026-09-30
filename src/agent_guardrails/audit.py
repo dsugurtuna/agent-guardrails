@@ -122,7 +122,9 @@ class AuditLog:
                 record["hash"] = record_hash(record)
                 # Written in insertion order for readability; the hash is over the
                 # canonical (sorted-key) form, so key order in the file does not matter.
-                line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+                # ASCII-only on disk: characters such as U+2028 or U+0085 count as line
+                # breaks for some readers and would otherwise split a record in two.
+                line = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
                 f.write((line + "\n").encode("utf-8"))
                 f.flush()
                 if self._fsync:
