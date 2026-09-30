@@ -40,7 +40,7 @@ policy.fingerprint()  # SHA-256, recorded with every decision
 | `recipients` | none | Recipient allow-list (below). |
 | `rate_limit` | none | `{max_calls, window_seconds, per_agent}`. Counts calls that ran (including failed ones) in the trailing window, across all agents unless `per_agent: true`. |
 | `cost` | none | `{fixed: 0.5}` or `{field: amount}`. Charged to the calling agent's budget. A `field` value must be a finite number >= 0. |
-| `approval_ttl_seconds` | `3600` | How long a queued action stays valid, from when it was requested. After this it can be neither approved nor run. |
+| `approval_ttl_seconds` | `3600` | How long a queued action stays valid, from when it was requested. After this it can be neither approved nor run. When an approved action is about to run, the shorter of the TTL it was requested with and the TTL in the current policy applies, so shortening the TTL also retires older approvals. |
 | `dedupe_window_seconds` | `3600` | Identical actions within this window are not repeated. `0` disables de-duplication. While on, an identical action that is still pending or approved counts as a duplicate however old it is. |
 | `max_pending` | none | Maximum number of this tool's actions awaiting approval at once. |
 | `redact_fields` | `[]` | Extra argument keys to redact for this tool (for example `body`). |

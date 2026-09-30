@@ -266,3 +266,34 @@ def test_state_files_are_private_to_their_owner(tmp_path: Path, email_policy: Po
     for path in (home, home / "queue.db", home / "audit.jsonl", *home.glob("queue.db-*")):
         mode = stat.S_IMODE(path.stat().st_mode)
         assert mode & 0o077 == 0, f"{path.name} is {oct(mode)}"
+
+
+def test_shortened_ttl_applies_to_approvals_already_given(
+    make_guard: MakeGuard, email_policy: Policy, clock: FakeClock, backend: Backend
+) -> None:
+    # During an incident the security team cuts the approval TTL from 10 minutes to
+    # one. Approvals older than that must not run, even though they were stamped with
+    # the longer TTL when they were requested.
+    guard = make_guard(email_policy)
+    action_id = _queue(guard)
+    guard.approve(action_id, by="alice")
+    guard.set_policy(_policy_with(approval_ttl_seconds=60), by="security-team")
+    clock.advance(120)
+    outcome = guard.execute_approved(action_id)
+    assert outcome.reason is Reason.APPROVAL_EXPIRED
+    assert guard.store.get(action_id).status is ActionState.EXPIRED
+    assert backend.calls == []
+    events = [json.loads(line)["event"] for line in guard.audit.path.read_text().splitlines()]
+    assert events[-1] == "expired"
+
+
+def test_lengthened_ttl_does_not_revive_an_old_approval(
+    make_guard: MakeGuard, email_policy: Policy, clock: FakeClock, backend: Backend
+) -> None:
+    guard = make_guard(email_policy)
+    action_id = _queue(guard)
+    guard.approve(action_id, by="alice")
+    guard.set_policy(_policy_with(approval_ttl_seconds=86400))
+    clock.advance(601)  # past the 600s it was requested with
+    assert guard.execute_approved(action_id).reason is Reason.APPROVAL_EXPIRED
+    assert backend.calls == []

@@ -604,6 +604,36 @@ class Guard:
         approved = self.store.list_actions([ActionState.APPROVED])
         return [self.execute_approved(rec.id) for rec in approved]
 
+    def _expire_if_stale(
+        self, rec: ActionRecord, tool: ToolPolicy | None, now: float
+    ) -> Outcome | None:
+        """Expire an approved action whose time is up; ``None`` if it is still valid.
+
+        The current policy's TTL applies too, so shortening it takes effect on
+        approvals already given; lengthening it never revives an old one.
+        """
+        expires_at = rec.expires_at
+        if tool is not None and expires_at is not None:
+            expires_at = min(expires_at, rec.created_at + tool.approval_ttl_seconds)
+        if expires_at is None or expires_at > now:
+            return None
+        with self.store.transaction() as tx:
+            expired = tx.update(
+                rec.id,
+                expect=(ActionState.APPROVED,),
+                status=ActionState.EXPIRED,
+                reason=str(Reason.APPROVAL_EXPIRED),
+                finished_at=now,
+            )
+        if expired:
+            self._audit(
+                "expired", tool=rec.tool, agent_id=rec.agent_id, action_id=rec.id, was=rec.status
+            )
+        msg = f"the approval expired at {_iso(expires_at)}; request the action again."
+        return Outcome(
+            Status.BLOCKED, rec.tool, msg, action_id=rec.id, reason=Reason.APPROVAL_EXPIRED
+        )
+
     def execute_approved(self, action_id: str) -> Outcome:
         """Re-validate an approved action against *current* conditions, then run it.
 
@@ -652,12 +682,9 @@ class Guard:
         if ks.engaged:
             msg = f"the kill switch is engaged ({ks.reason}); the action stays approved but unrun."
             return self._block(ctx, Reason.KILL_SWITCH, msg, logged, action_id)
-        if rec.expires_at is not None and rec.expires_at <= now:
-            self.expire_stale()
-            msg = f"the approval expired at {_iso(rec.expires_at)}; request the action again."
-            return Outcome(
-                Status.BLOCKED, rec.tool, msg, action_id=action_id, reason=Reason.APPROVAL_EXPIRED
-            )
+        stale = self._expire_if_stale(rec, tool, now)
+        if stale is not None:
+            return stale
         if digest(rec.args) != rec.args_digest:
             return close(
                 Reason.ARGUMENTS_CHANGED,
