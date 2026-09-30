@@ -235,3 +235,19 @@ def test_redact_hook(tmp_path: Path, email_policy: Policy) -> None:
     log = guard.audit.path.read_text()
     assert "Salary review" not in log
     assert "<subject hidden>" in log
+
+
+def test_malformed_arguments_are_blocked_and_still_audited(tmp_path: Path) -> None:
+    policy = Policy.from_yaml(
+        "tools: {pay: {mode: allow, args: {amount: {type: float}}}, ping: {mode: allow}}\n"
+    )
+    guard = Guard(policy, home=tmp_path)
+    guard.register("pay", lambda amount: None)
+    guard.register("ping", lambda payload: None)
+    assert guard.call("pay", {"amount": float("nan")}).reason is Reason.INVALID_ARGUMENTS
+    assert guard.call("ping", {"payload": float("inf")}).reason is Reason.INVALID_ARGUMENTS
+    assert guard.call("ping", {"payload": object()}).reason is Reason.INVALID_ARGUMENTS
+    assert guard.call("unknown", {"x": object()}).reason is Reason.UNKNOWN_TOOL
+    log = guard.audit.path.read_text()
+    assert "<object>" in log and '"amount":"nan"' in log
+    assert verify_log(guard.audit.path).ok

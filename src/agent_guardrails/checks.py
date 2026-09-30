@@ -60,13 +60,21 @@ def validate_arguments(
         try:
             canonical_json(plain)
         except (TypeError, ValueError):
-            return None, Violation(Reason.INVALID_ARGUMENTS, "arguments must be JSON-serialisable")
+            return None, Violation(
+                Reason.INVALID_ARGUMENTS, "arguments must be JSON-serialisable with finite numbers"
+            )
         return ValidatedArgs(stored=plain, call=dict(plain)), None
     try:
         instance = model.model_validate(dict(args))
     except ValidationError as exc:
         return None, Violation(Reason.INVALID_ARGUMENTS, _summarise(exc))
     stored = instance.model_dump(mode="json")
+    try:
+        canonical_json(stored)  # rejects NaN and infinity, which pydantic accepts by default
+    except (TypeError, ValueError):
+        return None, Violation(
+            Reason.INVALID_ARGUMENTS, "arguments must be JSON-serialisable with finite numbers"
+        )
     call = {name: getattr(instance, name) for name in type(instance).model_fields}
     return ValidatedArgs(stored=stored, call=call), None
 

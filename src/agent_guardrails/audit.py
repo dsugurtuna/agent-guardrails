@@ -14,6 +14,7 @@ is why this is called tamper-*evident*, not tamper-proof.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from collections.abc import Callable
@@ -40,6 +41,23 @@ def record_hash(record: dict[str, Any]) -> str:
     """Hash of a record, computed over every key except ``hash`` itself."""
     body = {k: v for k, v in record.items() if k != "hash"}
     return sha256_hex(canonical_json(body))
+
+
+def json_safe(value: Any) -> Any:
+    """Make a value loggable: non-JSON values become a type marker, never a crash.
+
+    The audit log must be able to record a *blocked* call even when the call was
+    blocked precisely because its arguments were malformed.
+    """
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else repr(value)
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [json_safe(v) for v in value]
+    return f"<{type(value).__name__}>"
 
 
 def _iso(ts: float) -> str:
@@ -116,7 +134,7 @@ class AuditLog:
                     "seq": seq,
                     "ts": _iso(self._now()),
                     "event": event,
-                    **fields,
+                    **json_safe(fields),
                     "prev_hash": prev,
                 }
                 record["hash"] = record_hash(record)
