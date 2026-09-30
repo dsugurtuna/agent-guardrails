@@ -31,8 +31,8 @@ anthropic = ["anthropic>=1.9"]
 dev = [
     "pytest>=8",
     "hypothesis>=6.100",
-    "ruff>=0.6",
-    "mypy>=1.10",
+    "ruff>=0.16.9,<0.17",  # pinned: formatting (including Markdown code blocks) varies by version
+    "mypy>=2.3,<3",
     "types-PyYAML",
 ]
 

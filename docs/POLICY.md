@@ -7,9 +7,9 @@ for a complete, commented example.
 ```python
 from agent_guardrails import Policy
 
-policy = Policy.from_yaml("policy.yaml")      # a path, or a YAML string
-policy = Policy.from_dict({...})              # a plain dict
-policy.fingerprint()                           # SHA-256, recorded with every decision
+policy = Policy.from_yaml("policy.yaml")  # a path, or a YAML string
+policy = Policy.from_dict({...})  # a plain dict
+policy.fingerprint()  # SHA-256, recorded with every decision
 ```
 
 ## Top level

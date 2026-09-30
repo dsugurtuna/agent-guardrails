@@ -92,13 +92,16 @@ tools:
 """)
 guard = Guard(policy)  # state lives in ./.agent-guardrails, shared with the CLI
 
+
 @guard.tool()
 def list_events(day: str) -> list[str]:
     return ["09:00 stand-up"]  # your real calendar call
 
+
 @guard.tool()
 def send_email(to: list[str], subject: str, body: str) -> str:
     return "sent"  # your real mail call
+
 
 print(list_events("2026-10-01").as_tool_result())
 # OK: 'list_events' was executed (action_id=act_...). Result: ["09:00 stand-up"]
@@ -120,7 +123,7 @@ agent-guardrails audit verify
 Back in the application, which holds the credentials and the tool functions:
 
 ```python
-for outcome in guard.run_approved():   # re-validates each action, then runs it
+for outcome in guard.run_approved():  # re-validates each action, then runs it
     print(outcome.as_tool_result())
 ```
 
