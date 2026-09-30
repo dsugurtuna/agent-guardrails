@@ -12,6 +12,13 @@ All notable changes to this project are recorded here. The format follows
   that a live log still starts with the records anchored earlier. `audit head` prints
   the anchor. (`expected_head` only matches a log that has not grown since.)
 
+### Fixed
+
+- Several processes creating a new store at the same moment could fail with
+  "database is locked": while one process switches a new file to WAL, SQLite can
+  fail another's switch at once, without waiting on the busy timeout. The store now
+  retries that step with a short backoff, up to its timeout.
+
 ### Fixed (security review)
 
 - Recipient domains must be plain ASCII hostnames: NUL bytes, URL delimiters, empty

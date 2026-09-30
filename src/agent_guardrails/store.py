@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
@@ -219,8 +220,31 @@ class ActionStore:
         make_private_dir(self.path.parent)
         create_private_file(self.path)  # SQLite gives its -wal and -shm files the same mode
         with closing(self._connect()) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
+            self._enable_wal(conn)
             conn.executescript(_SCHEMA)
+
+    def _enable_wal(self, conn: sqlite3.Connection) -> None:
+        """Switch to WAL, waiting out other processes that are opening the same file.
+
+        While another process is switching the same new file to WAL, SQLite can fail
+        the switch at once with "database is locked", without waiting on the busy
+        timeout. WAL is persistent, so this only matters when several processes
+        create a new store at the same moment. Retry with a short backoff, up to
+        ``timeout``.
+        """
+        deadline = time.monotonic() + self.timeout
+        delay = 0.005
+        while True:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                # The low byte is the primary result code (extended codes add to it).
+                busy = getattr(exc, "sqlite_errorcode", 0) & 0xFF == sqlite3.SQLITE_BUSY
+                if not busy or time.monotonic() + delay > deadline:
+                    raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
 
     def _connect(self) -> sqlite3.Connection:
         # One short-lived connection per operation: sqlite3 connections must not be
