@@ -29,9 +29,10 @@ class Violation:
 class ValidatedArgs:
     """Arguments after validation.
 
-    ``stored`` is the JSON form that is hashed, queued and audited. ``call`` is what
-    the tool function receives. Both come from the same validated object, so what was
-    checked (and approved) is exactly what runs.
+    ``stored`` is the JSON form that is checked, hashed, queued and audited. ``call``
+    is what the tool function receives, rebuilt from ``stored`` (and required to
+    match the original validation), so what was checked (and approved) is exactly
+    what runs, whether it runs now or later from the queue.
     """
 
     stored: dict[str, Any]
@@ -52,6 +53,10 @@ def _summarise(exc: ValidationError, limit: int = 5) -> str:
 
 
 _NOT_JSON = "arguments must be JSON-serialisable, with finite numbers and valid Unicode text"
+_NOT_ROUND_TRIP = (
+    "the argument model does not read back its own JSON form (a field is excluded or "
+    "serialised differently), so what is checked would not be what runs"
+)
 
 
 def _is_json_text(value: Any) -> bool:
@@ -79,7 +84,16 @@ def validate_arguments(
     stored = instance.model_dump(mode="json")
     if not _is_json_text(stored):  # pydantic accepts NaN, infinity and lone surrogates
         return None, Violation(Reason.INVALID_ARGUMENTS, _NOT_JSON)
-    call = {name: getattr(instance, name) for name in type(instance).model_fields}
+    # Why a round trip? A model can leave a field out of its dump (Field(exclude=True))
+    # or serialise it differently (a field_serializer, SecretStr). The checks see the
+    # dump; the tool must not receive anything the dump does not say.
+    try:
+        again = model.model_validate(stored)
+    except ValidationError:
+        return None, Violation(Reason.INVALID_ARGUMENTS, _NOT_ROUND_TRIP)
+    if again != instance:
+        return None, Violation(Reason.INVALID_ARGUMENTS, _NOT_ROUND_TRIP)
+    call = {name: getattr(again, name) for name in type(again).model_fields}
     return ValidatedArgs(stored=stored, call=call), None
 
 

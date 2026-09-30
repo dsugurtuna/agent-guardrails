@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from agent_guardrails import Cost, Mode, Policy, Reason, RecipientRule, ToolPolicy
 from agent_guardrails.checks import (
@@ -162,3 +163,51 @@ def test_punycode_domains_can_be_allow_listed() -> None:
     rule = RecipientRule(fields=["to"], allowed_domains=["xn--bcher-kva.example"])
     assert check_recipients(rule, {"to": "a@XN--BCHER-KVA.example."}) is None
     assert check_recipients(rule, {"to": "a@bücher.example"}) is not None
+
+
+class _BccHidden(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    to: list[str]
+    bcc: list[str] = Field(default_factory=list, exclude=True)  # left out of the dump
+
+
+class _ToRewritten(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    to: list[str]
+
+    @field_serializer("to")
+    def _display(self, value: list[str]) -> list[str]:
+        return [a.split("@")[0] + "@example.com" for a in value]
+
+
+@pytest.mark.parametrize(
+    ("model", "args"),
+    [
+        (_BccHidden, {"to": ["a@example.com"], "bcc": ["x@evil.test"]}),
+        (_ToRewritten, {"to": ["x@evil.test"]}),
+    ],
+)
+def test_what_is_checked_is_what_the_tool_receives(
+    model: type[BaseModel], args: dict[str, object]
+) -> None:
+    # The checks, the digest and the queue use the JSON form; the tool must not
+    # receive anything that form does not say.
+    tool = ToolPolicy(mode=Mode.ALLOW, args_model=model)
+    rule = RecipientRule(fields=list(model.model_fields), allowed_domains=["example.com"])
+    validated, v = validate_arguments(tool, args)
+    if validated is not None:
+        assert check_recipients(rule, validated.stored) is None  # the policy passes...
+        sent = validated.call.get("to", []) + validated.call.get("bcc", [])
+        assert all(a.endswith("@example.com") for a in sent)  # ...so only these may go
+    else:
+        assert v is not None and v.reason is Reason.INVALID_ARGUMENTS
+
+
+def test_yaml_schemas_with_defaults_still_validate() -> None:
+    policy = Policy.from_yaml(
+        "tools: {t: {mode: allow, args: {a: {type: str}, b: {type: int, required: false, "
+        "default: 3}, c: {type: 'list[float]', required: false}}}}\n"
+    )
+    validated, v = validate_arguments(policy.tools["t"], {"a": "x"})
+    assert v is None and validated is not None
+    assert validated.call == {"a": "x", "b": 3, "c": None}

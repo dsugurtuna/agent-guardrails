@@ -62,7 +62,11 @@ A constraint that cannot apply to the type (for example `pattern` on an `int`, o
 
 For anything richer (nested objects, dates, custom validators) use `args_model` with a
 pydantic model in Python. Set `model_config = ConfigDict(extra="forbid")` on it if
-unknown arguments should be rejected.
+unknown arguments should be rejected. The model must read back its own JSON form
+unchanged: the checks, the approval digest and the queue all use that form, so a
+field with `exclude=True`, a serializer that changes a value, or a `SecretStr` makes
+every call fail with `invalid_arguments` rather than letting the tool receive
+something that was never checked.
 
 ### `recipients`
 
