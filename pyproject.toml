@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-guardrails"
+version = "0.1.0"
+description = "Controls for AI agents that write or send: allow/draft/approve modes, execution-time re-validation, idempotency, a tamper-evident audit log and a kill switch."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Ugur Tuna" }]
+keywords = ["ai-agents", "guardrails", "tool-use", "human-in-the-loop", "audit-log", "llm-security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.6,<3",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=1.9"]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[project.scripts]
+agent-guardrails = "agent_guardrails.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dsugurtuna/agent-guardrails"
+Issues = "https://github.com/dsugurtuna/agent-guardrails/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_guardrails"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S", "PTH", "C4", "PL"]
+ignore = [
+    "PLR0911", # many early returns are the clearest way to express a policy decision
+    "PLR0912",
+    "PLR0913",
+    "PLR2004",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S311", "PLC0415"]
+"examples/**" = ["T201"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "examples"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

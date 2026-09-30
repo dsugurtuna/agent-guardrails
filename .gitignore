@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Local guardrail state (queue database, audit log, kill-switch flag)
+.agent-guardrails/
+*.db
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
