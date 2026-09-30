@@ -124,3 +124,41 @@ def test_schemaless_arguments_must_be_json() -> None:
     assert validated is None
     assert v is not None
     assert v.reason is Reason.INVALID_ARGUMENTS
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "a@evil.test\x00.example.org",  # NUL: C-string truncation leaves evil.test
+        "a@evil.test#.example.org",  # URL delimiters: a URL built from this goes to evil.test
+        "a@evil.test/.example.org",
+        "a@evil.test?.example.org",
+        "a@evil.test\\.example.org",
+        "a@evil.test\u200b.example.org",  # invisible characters
+        "a@.example.org",  # empty labels
+        "a@team..example.org",
+        "a@example.com..",
+        "a@-team.example.org",  # labels cannot start or end with a hyphen
+        "a\x00@example.com",  # control characters anywhere in the address
+    ],
+)
+def test_domains_that_are_not_hostnames_are_refused(address: str) -> None:
+    v = check_recipients(RULE, {"to": address})
+    assert v is not None
+    assert v.reason is Reason.RECIPIENT_NOT_ALLOWED
+
+
+@pytest.mark.parametrize(
+    "domain",
+    ["evil.test\x00.example.org", "ex\u0430mple.com", "\u212aexample.com", "example.com.."],
+)
+def test_domain_allowed_refuses_non_hostnames(domain: str) -> None:
+    # Cyrillic "a" and the Kelvin sign (which lower-cases to ASCII "k") are refused:
+    # internationalised domains must be written in their ASCII (xn--) form.
+    assert not domain_allowed(domain, ["example.com", "*.example.org", "kexample.com"])
+
+
+def test_punycode_domains_can_be_allow_listed() -> None:
+    rule = RecipientRule(fields=["to"], allowed_domains=["xn--bcher-kva.example"])
+    assert check_recipients(rule, {"to": "a@XN--BCHER-KVA.example."}) is None
+    assert check_recipients(rule, {"to": "a@bücher.example"}) is not None

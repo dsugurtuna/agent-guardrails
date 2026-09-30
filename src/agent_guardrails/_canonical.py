@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Iterable
 from typing import Any
+
+_LDH_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 def canonical_json(obj: Any) -> str:
@@ -28,6 +31,28 @@ def sha256_hex(text: str) -> str:
 def digest(obj: Any) -> str:
     """SHA-256 of the canonical JSON form of ``obj``."""
     return sha256_hex(canonical_json(obj))
+
+
+def canonical_hostname(value: str) -> str | None:
+    """Lower-case ASCII hostname without its trailing dot, or ``None`` if not a hostname.
+
+    Why so strict? A domain is compared as text here but used by software that may
+    read it differently: a NUL byte ends a C string; ``#``, ``/`` or ``?`` end the host
+    part of a URL; and IDNA maps Unicode in ways ``str.lower()`` does not (the Kelvin
+    sign lower-cases to ASCII ``k``). Only letters, digits and hyphens in non-empty
+    labels are accepted, so the name that is checked is the name that gets resolved.
+    Internationalised domains must be written in their ASCII (``xn--``) form.
+    """
+    if not value.isascii():  # before lower(): some non-ASCII letters lower-case to ASCII
+        return None
+    host = value.lower()
+    if host.endswith("."):
+        host = host[:-1]  # one trailing dot is the fully qualified form of the same name
+    if not host or len(host) > 253:
+        return None
+    if not all(_LDH_LABEL.fullmatch(label) for label in host.split(".")):
+        return None
+    return host
 
 
 def _normalise_text(value: str) -> str:

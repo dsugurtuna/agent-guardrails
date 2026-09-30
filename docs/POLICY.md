@@ -66,12 +66,17 @@ unknown arguments should be rejected.
 | Key | Meaning |
 |---|---|
 | `fields` | Argument names holding addresses (a string, a comma-separated string, or a list). All are counted and checked together. |
-| `allowed_domains` | `example.com` matches exactly; `*.example.com` matches subdomains only; `*` matches everything (write it on purpose). |
+| `allowed_domains` | `example.com` matches exactly; `*.example.com` matches subdomains only; `*` matches everything (write it on purpose). Entries must be ASCII hostnames; write internationalised domains in their `xn--` form. A malformed entry is a `PolicyError`. |
 | `max_recipients` | Maximum total addresses across `fields`. |
 
 Addresses are parsed strictly: each value must yield exactly one address per `@`,
 so a display name hiding a second address (`"a@evil.test" <b@example.com>`) is
-rejected rather than guessed at.
+rejected rather than guessed at. Values containing control or invisible characters
+(NUL, line breaks, zero-width spaces) are rejected, and the domain must be a plain
+hostname: letters, digits and hyphens in non-empty labels, with at most one trailing
+dot. So `a@evil.test#.example.com` or `a@evil.test\x00.example.com` cannot pass a
+`*.example.com` entry by being read differently later. Unicode domains are refused,
+because `str.lower()` and IDNA do not map them the same way; use the `xn--` form.
 
 ## Order of checks
 

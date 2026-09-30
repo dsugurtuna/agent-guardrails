@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from ._canonical import canonical_json
+from ._canonical import canonical_hostname, canonical_json
 from .outcomes import Reason
 from .policy import Cost, RecipientRule, ToolPolicy
 
@@ -80,14 +80,18 @@ def validate_arguments(
 
 
 def domain_allowed(domain: str, allowed: list[str]) -> bool:
-    domain = domain.lower().rstrip(".")
+    """Whether ``domain`` matches the allow-list. Anything that is not a plain
+    hostname (see :func:`canonical_hostname`) is refused, even under ``*.`` entries."""
+    if "*" in allowed:
+        return True
+    host = canonical_hostname(domain)
+    if host is None:
+        return False
     for pattern in allowed:
-        if pattern == "*":
-            return True
         if pattern.startswith("*."):
-            if domain.endswith(pattern[1:]):
+            if host.endswith(pattern[1:]):
                 return True
-        elif domain == pattern:
+        elif host == pattern:
             return True
     return False
 
@@ -96,8 +100,9 @@ def extract_addresses(value: Any) -> list[str]:
     """Parse one field's value into bare addresses. Raises ``ValueError`` if ambiguous.
 
     Why so strict? Address parsing is a classic source of bypasses (quoted local
-    parts, display names containing another address, stray commas). Anything that
-    does not parse to exactly one ``local@domain`` per ``@`` is rejected: fail closed.
+    parts, display names containing another address, stray commas, control
+    characters, domains that are not hostnames). Anything that does not parse to
+    exactly one ``local@hostname`` per ``@`` is rejected: fail closed.
     """
     if value is None:
         return []
@@ -108,13 +113,17 @@ def extract_addresses(value: Any) -> list[str]:
     for raw in raw_items:
         if not isinstance(raw, str):
             raise ValueError("recipient entries must be strings")
+        if not raw.isprintable():  # NUL, CR/LF, zero-width and other invisible characters
+            raise ValueError(f"recipient {raw!r} contains control or invisible characters")
         parsed = [addr for _name, addr in getaddresses([raw]) if addr]
         if raw.count("@") != len(parsed) or not parsed:
             raise ValueError(f"could not parse recipient {raw!r} unambiguously")
         for addr in parsed:
             local, sep, domain = addr.rpartition("@")
-            if not sep or not local or not domain or any(c.isspace() for c in addr):
+            if not sep or not local or any(c.isspace() for c in addr):
                 raise ValueError(f"malformed address {addr!r}")
+            if canonical_hostname(domain) is None:
+                raise ValueError(f"malformed address {addr!r}: the domain is not a hostname")
             addresses.append(addr)
     return addresses
 

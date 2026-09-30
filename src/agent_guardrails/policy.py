@@ -23,7 +23,7 @@ from pydantic import (
     model_validator,
 )
 
-from ._canonical import digest
+from ._canonical import canonical_hostname, digest
 from .errors import PolicyError
 
 DEFAULT_REDACT_FIELDS: tuple[str, ...] = (
@@ -121,6 +121,8 @@ class RecipientRule(_Strict):
 
     ``allowed_domains`` entries match exactly (``example.com``), match any subdomain
     (``*.example.com``), or match everything (``*``, which must be written on purpose).
+    Entries must be ASCII hostnames (internationalised domains in ``xn--`` form), so a
+    typo such as ``*example.com`` fails loudly instead of silently matching nothing.
     """
 
     fields: list[str] = Field(min_length=1)
@@ -129,8 +131,22 @@ class RecipientRule(_Strict):
 
     @field_validator("allowed_domains")
     @classmethod
-    def _lower(cls, value: list[str]) -> list[str]:
-        return [d.strip().lower().rstrip(".") for d in value]
+    def _canonical(cls, value: list[str]) -> list[str]:
+        out: list[str] = []
+        for entry in value:
+            text = entry.strip()
+            if text == "*":
+                out.append(text)
+                continue
+            wildcard = text.startswith("*.")
+            host = canonical_hostname(text[2:] if wildcard else text)
+            if host is None:
+                raise ValueError(
+                    f"allowed_domains entry {entry!r} must be '*', a hostname, or '*.' and "
+                    "a hostname (write internationalised domains in their xn-- form)"
+                )
+            out.append("*." + host if wildcard else host)
+        return out
 
 
 class RateLimit(_Strict):

@@ -139,3 +139,20 @@ def test_from_yaml_accepts_path_string_and_single_line_text(tmp_path: Path) -> N
         Policy.from_yaml("missing-policy.yaml")
     with pytest.raises(PolicyError, match="not valid YAML"):
         Policy.from_yaml("tools: {x: [unclosed\n")
+
+
+@pytest.mark.parametrize(
+    "entry", ["*example.com", "", "exa mple.com", "*.*.example.com", "bücher.example", "a..b"]
+)
+def test_malformed_allow_list_entries_fail_loudly(entry: str) -> None:
+    with pytest.raises(PolicyError, match="allowed_domains"):
+        Policy.from_dict(
+            {
+                "tools": {
+                    "t": {
+                        "mode": "allow",
+                        "recipients": {"fields": ["to"], "allowed_domains": [entry]},
+                    }
+                }
+            }
+        )
