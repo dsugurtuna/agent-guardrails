@@ -29,3 +29,4 @@ htmlcov/
 # Demo state created by the examples
 /demo-state/
 /claude-demo/
+/openai-demo/
