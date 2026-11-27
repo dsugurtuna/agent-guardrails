@@ -18,12 +18,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from agent_guardrails.adapters.claude import DEFAULT_MODEL, run_tool_loop, tool_definition
+
+anthropic: Any
 try:
-    import anthropic
+    import anthropic as _anthropic
+
+    anthropic = _anthropic
 except ModuleNotFoundError:  # optional extra; handled cleanly in main()
     anthropic = None
-
-from agent_guardrails.adapters.claude import DEFAULT_MODEL, run_tool_loop, tool_definition
 
 _EXAMPLES_DIR = str(Path(__file__).resolve().parent)
 if _EXAMPLES_DIR not in sys.path:
