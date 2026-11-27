@@ -14,6 +14,7 @@ from agent_guardrails import Policy, Status, verify_log
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 EXAMPLE = EXAMPLES_DIR / "email_calendar_assistant.py"
 CLAUDE_EXAMPLE = EXAMPLES_DIR / "claude_assistant.py"
+OPENAI_EXAMPLE = EXAMPLES_DIR / "openai_assistant.py"
 
 
 def _load(path: Path = EXAMPLE, name: str = "email_calendar_assistant") -> ModuleType:
@@ -76,3 +77,29 @@ def test_claude_example_imports_without_examples_on_sys_path(
         "draft_reply",
         "send_email",
     ]
+
+
+def test_openai_example_runs_offline_and_imports_without_examples_on_sys_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if Path(p) != EXAMPLES_DIR])
+    monkeypatch.delitem(sys.modules, "email_calendar_assistant", raising=False)
+    module = _load(OPENAI_EXAMPLE, "openai_assistant_isolated")
+    policy = Policy.from_yaml(EXAMPLES_DIR / "policy.yaml")
+    tools = module.tools_for(policy)
+    assert [t["function"]["name"] for t in tools] == [
+        "list_events",
+        "create_event",
+        "draft_reply",
+        "send_email",
+    ]
+    result = module.run_demo(tmp_path)
+    assert result.stop_reason == "stop"
+    assert [o.status for o in result.outcomes] == [
+        Status.EXECUTED,
+        Status.DRAFTED,
+        Status.QUEUED,
+        Status.BLOCKED,
+    ]
+    assert module.main([]) == 0
+    assert "chain intact: True" in capsys.readouterr().out

@@ -8,6 +8,13 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- OpenAI and Azure OpenAI Chat Completions adapter (`agent_guardrails.adapters.openai`,
+  optional `[openai]` extra, and `examples/openai_assistant.py` with offline demo
+  mode): exports OpenAI function tool schemas from `Policy`, strictly parses tool-call
+  JSON arguments (failing closed through `Guard` on malformed JSON, duplicate keys,
+  `NaN`/`Infinity`, and non-object values), redacts structured tool outputs in
+  `role: "tool"` messages, and refuses tool execution on `content_filter`, `refusal`, or
+  `length`-truncated tool calls.
 - `verify_log(anchor=(count, head))` and `audit verify --anchor RECORDS:HEAD`: check
   that a live log still starts with the records anchored earlier. `audit head` prints
   the anchor. (`expected_head` only matches a log that has not grown since.)

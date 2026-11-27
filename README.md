@@ -36,6 +36,7 @@ Every tool call goes through a `Guard`, which applies a declarative policy:
 | **Kill switch** | Environment variable (`AGENT_GUARDRAILS_KILL`: any value except empty, `0`, `false`, `no` or `off` engages it), flag file or API. Blocks everything, including approved actions. |
 | **Model-friendly results** | Every call returns an `Outcome` whose text tells the model what happened ("queued for human approval, do not retry"). |
 | **Claude adapter** (optional) | Runs guarded tools inside a Claude tool-use loop and returns sensible `tool_result` blocks. |
+| **OpenAI & Azure OpenAI adapter** (optional) | Runs guarded tools inside a Chat Completions loop (`OpenAI` / `AzureOpenAI`), strictly parses tool arguments, and returns redacted `role: "tool"` messages. |
 | **CLI** | `agent-guardrails queue list/show/approve/reject`, `audit verify/head`, `kill on/off/status`. |
 
 ## Quickstart
@@ -172,6 +173,62 @@ side and are not guarded; see the threat model. See
 [`examples/claude_assistant.py`](examples/claude_assistant.py) (needs credentials; the
 tests use a fake client).
 
+### With OpenAI or Azure OpenAI
+
+```bash
+pip install -e ".[openai]"
+```
+
+```python
+import openai
+from agent_guardrails.adapters.openai import run_tool_loop, tool_definition
+
+send_email_tool = tool_definition(
+    policy,
+    "send_email",
+    "Send an email. A human approves it before it is sent.",
+)
+
+# Standard OpenAI:
+client = openai.OpenAI()
+result = run_tool_loop(
+    client,
+    guard,
+    model="gpt-4.1",
+    system="You are an assistant.",
+    messages=[{"role": "user", "content": "Email Sam about tomorrow's sync"}],
+    tools=[send_email_tool],
+)
+
+# Azure OpenAI (pass your deployment name as `model`):
+azure_client = openai.AzureOpenAI(
+    azure_endpoint="https://example-resource.openai.azure.com/",
+    api_version="2025-03-01-preview",
+)
+azure_result = run_tool_loop(
+    azure_client,
+    guard,
+    model="my-gpt41-deployment",
+    messages=[{"role": "user", "content": "Email Sam about tomorrow's sync"}],
+    tools=[send_email_tool],
+)
+print(result.text, [str(o.status) for o in result.outcomes])
+```
+
+`run_tool_loop` uses `client.chat.completions.create` (compatible with `openai.OpenAI`
+and `openai.AzureOpenAI` without importing `openai` in the core package), strictly
+parses JSON tool arguments (rejecting malformed JSON, duplicate keys, `NaN`/`Infinity`,
+and non-object payloads through `Guard.call`), sends redacted `role: "tool"` messages
+matched by `tool_call_id`, and stops without running tools on `content_filter`,
+`refusal`, or `length` with partial tool calls. Run the offline demo with:
+
+```bash
+python examples/openai_assistant.py
+```
+
+See [`examples/openai_assistant.py`](examples/openai_assistant.py) for both offline demo
+mode and `--provider openai|azure` usage.
+
 ## How it works
 
 An approve-mode action, from the model's request to execution:
@@ -276,7 +333,8 @@ src/agent_guardrails/
   outcomes.py         Outcome, Status, Reason
   cli.py              agent-guardrails command
   adapters/claude.py  Claude tool-use loop
-examples/             offline email and calendar assistant, Claude variant, policy.yaml
+  adapters/openai.py  OpenAI and Azure OpenAI Chat Completions tool-use loop
+examples/             offline email and calendar assistant, Claude and OpenAI variants, policy.yaml
 docs/                 WHY.md, THREAT-MODEL.md, POLICY.md
 tests/                unit, property-based (hypothesis), concurrency and end-to-end tests
 ```

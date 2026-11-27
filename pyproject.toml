@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.9"]
+openai = ["openai>=1.50"]
 dev = [
     "pytest>=8",
     "hypothesis>=6.100",
@@ -72,7 +73,7 @@ files = ["src", "examples"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["anthropic", "anthropic.*"]
+module = ["anthropic", "anthropic.*", "openai", "openai.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
