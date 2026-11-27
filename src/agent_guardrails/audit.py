@@ -19,7 +19,8 @@ import json
 import math
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +39,19 @@ GENESIS_HASH = "0" * 64
 RESERVED_KEYS = frozenset({"seq", "ts", "event", "prev_hash", "hash"})
 
 _process_lock = threading.Lock()
+
+
+@contextmanager
+def _open_shared_read(path: Path) -> Iterator[IO[bytes]]:
+    """Open ``path`` for reading under the process lock and a shared ``flock``."""
+    with _process_lock, path.open("rb") as f:
+        if fcntl is not None:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        try:
+            yield f
+        finally:
+            if fcntl is not None:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def record_hash(record: dict[str, Any]) -> str:
@@ -198,7 +212,13 @@ class AuditLog:
             raise AuditIntegrityError(f"last audit record is ambiguous: {exc}") from exc
         except (ValueError, RecursionError) as exc:
             raise AuditIntegrityError("last audit record is not valid JSON") from exc
-        if not isinstance(record, dict) or record_hash(record) != record.get("hash"):
+        if not isinstance(record, dict):
+            raise AuditIntegrityError("last audit record's hash does not match its content")
+        try:
+            expected_hash = record_hash(record)
+        except UnicodeEncodeError as exc:
+            raise AuditIntegrityError("last audit record contains invalid Unicode") from exc
+        if expected_hash != record.get("hash"):
             # Refuse to chain onto a record that has been altered: fail closed.
             raise AuditIntegrityError("last audit record's hash does not match its content")
         seq = record.get("seq")
@@ -208,10 +228,11 @@ class AuditLog:
 
     def head(self) -> tuple[int, str]:
         """``(record_count, head_hash)``. Store the head elsewhere to detect truncation."""
-        if not self.path.exists():
+        try:
+            with _open_shared_read(self.path) as f:
+                seq, head = self._tail(f)
+        except FileNotFoundError:
             return 0, GENESIS_HASH
-        with self.path.open("rb") as f:
-            seq, head = self._tail(f)
         return seq, head
 
     def verify(
@@ -247,43 +268,54 @@ def verify_log(
       record appended since, honest or not, makes the check fail.
     """
     p = Path(path)
-    if not p.exists():
-        return VerificationResult(False, 0, None, "audit log not found")
     prev = GENESIS_HASH
     count = 0
     anchored = GENESIS_HASH if anchor is not None and anchor[0] == 0 else None
-    with p.open("rb") as f:
-        for lineno, raw in enumerate(f, start=1):
-            if not raw.endswith(b"\n"):
-                return VerificationResult(False, count, prev, "last line is incomplete", lineno)
-            try:
-                record = _parse_record(raw.decode("utf-8"))
-            except _AmbiguousRecord as exc:
-                return VerificationResult(False, count, prev, f"line is ambiguous: {exc}", lineno)
-            except (ValueError, RecursionError):  # includes UnicodeDecodeError
-                return VerificationResult(False, count, prev, "line is not valid JSON", lineno)
-            if not isinstance(record, dict):
-                return VerificationResult(False, count, prev, "line is not a JSON object", lineno)
-            if record.get("seq") != count:
-                return VerificationResult(
-                    False,
-                    count,
-                    prev,
-                    f"sequence break: expected seq {count}, found {record.get('seq')!r}",
-                    lineno,
-                )
-            if record.get("prev_hash") != prev:
-                return VerificationResult(
-                    False, count, prev, "prev_hash does not match the previous record", lineno
-                )
-            if record_hash(record) != record.get("hash"):
-                return VerificationResult(
-                    False, count, prev, "record hash does not match its content", lineno
-                )
-            prev = str(record["hash"])
-            count += 1
-            if anchor is not None and count == anchor[0]:
-                anchored = prev
+    try:
+        with _open_shared_read(p) as f:
+            for lineno, raw in enumerate(f, start=1):
+                if not raw.endswith(b"\n"):
+                    return VerificationResult(False, count, prev, "last line is incomplete", lineno)
+                try:
+                    record = _parse_record(raw.decode("utf-8"))
+                except _AmbiguousRecord as exc:
+                    return VerificationResult(
+                        False, count, prev, f"line is ambiguous: {exc}", lineno
+                    )
+                except (ValueError, RecursionError):  # includes UnicodeDecodeError
+                    return VerificationResult(False, count, prev, "line is not valid JSON", lineno)
+                if not isinstance(record, dict):
+                    return VerificationResult(
+                        False, count, prev, "line is not a JSON object", lineno
+                    )
+                if record.get("seq") != count:
+                    return VerificationResult(
+                        False,
+                        count,
+                        prev,
+                        f"sequence break: expected seq {count}, found {record.get('seq')!r}",
+                        lineno,
+                    )
+                if record.get("prev_hash") != prev:
+                    return VerificationResult(
+                        False, count, prev, "prev_hash does not match the previous record", lineno
+                    )
+                try:
+                    expected = record_hash(record)
+                except UnicodeEncodeError:
+                    return VerificationResult(
+                        False, count, prev, "line contains invalid Unicode", lineno
+                    )
+                if expected != record.get("hash"):
+                    return VerificationResult(
+                        False, count, prev, "record hash does not match its content", lineno
+                    )
+                prev = str(record["hash"])
+                count += 1
+                if anchor is not None and count == anchor[0]:
+                    anchored = prev
+    except FileNotFoundError:
+        return VerificationResult(False, 0, None, "audit log not found")
     if anchor is not None:
         if anchored is None:
             return VerificationResult(

@@ -69,14 +69,19 @@ class Redactor:
         return value
 
 
+_MIN_SCRUB_LEN = 4
+
+
 def scrub(text: str, hidden: Iterable[str]) -> str:
     """Replace every occurrence of a hidden value in ``text`` with ``[REDACTED]``.
 
     Why? Messages can quote arguments ("recipient domain not on the allow-list:
     a@b.test"), and a redacted argument must not reach the log that way either.
-    One pass, longest value first, so a replacement is never matched again.
+    One pass, longest value first, so a replacement is never matched again. Values
+    shorter than four characters (such as ``"a"`` or ``"1"``) are skipped so trivial
+    inputs cannot corrupt ordinary words in log messages.
     """
-    values = sorted({h for h in hidden if h}, key=len, reverse=True)
+    values = sorted({h for h in hidden if len(h) >= _MIN_SCRUB_LEN}, key=len, reverse=True)
     if not values:
         return text
     return re.sub("|".join(re.escape(v) for v in values), REDACTED, text)

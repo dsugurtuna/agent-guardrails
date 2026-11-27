@@ -298,21 +298,34 @@ class Guard:
         self, name: str, args: Mapping[str, Any] | None = None, *, agent_id: str | None = None
     ) -> Outcome:
         """Apply the policy to one tool call and return what happened."""
+        policy, policy_hash = self._active
         if not isinstance(name, str) or not name or utf8_safe(name) != name:
             # The name comes from the model. Anything that is not usable text cannot be
             # in the policy, and must not reach the store or the hashes: block it.
             label = utf8_safe(name) if isinstance(name, str) else repr(name)
-            ctx0 = {"tool": label, "agent_id": agent_id or self.agent_id, "mode": "block"}
+            ctx0 = {
+                "tool": label,
+                "agent_id": agent_id or self.agent_id,
+                "mode": "block",
+                "policy_hash": policy_hash,
+            }
             msg = "the tool name is not a valid, non-empty string, so it is blocked."
-            logged = self._redactor(self.policy, None).redact(args)
-            return self._block(ctx0, Reason.UNKNOWN_TOOL, msg, logged)
-        policy, policy_hash = self._active
+            hidden0: set[str] = set()
+            logged = self._redactor(policy, None).redact(args, hidden0)
+            return self._block(ctx0, Reason.UNKNOWN_TOOL, msg, logged, hidden=hidden0)
         tool = policy.tool(name)
         mode = policy.mode_for(name)
         redactor = self._redactor(policy, tool)
-        raw: dict[str, Any] = dict(args or {})
         hidden: set[str] = set()
-        logged_raw = redactor.redact(raw, hidden)
+        if args is None:
+            raw: dict[str, Any] | None = {}
+            logged_raw: Any = {}
+        elif isinstance(args, Mapping):
+            raw = dict(args)
+            logged_raw = redactor.redact(raw, hidden)
+        else:
+            raw = None
+            logged_raw = redactor.redact(args, hidden)
         ctx: dict[str, Any] = {
             "tool": name,
             "agent_id": agent_id or self.agent_id,
@@ -323,13 +336,16 @@ class Guard:
         ks = self.kill_switch.status()
         if ks.engaged:
             msg = f"the kill switch is engaged ({ks.reason}); no actions are being taken."
-            return self._block(ctx, Reason.KILL_SWITCH, msg, logged_raw)
+            return self._block(ctx, Reason.KILL_SWITCH, msg, logged_raw, hidden=hidden)
         if mode is Mode.BLOCK:
             if tool is None:
                 msg = f"'{name}' is not in the policy, so it is blocked by default."
-                return self._block(ctx, Reason.UNKNOWN_TOOL, msg, logged_raw)
+                return self._block(ctx, Reason.UNKNOWN_TOOL, msg, logged_raw, hidden=hidden)
             msg = f"'{name}' is blocked by policy."
-            return self._block(ctx, Reason.TOOL_BLOCKED, msg, logged_raw)
+            return self._block(ctx, Reason.TOOL_BLOCKED, msg, logged_raw, hidden=hidden)
+        if raw is None:
+            msg = "tool arguments must be a mapping (JSON object)."
+            return self._block(ctx, Reason.INVALID_ARGUMENTS, msg, logged_raw, hidden=hidden)
 
         effective = tool if tool is not None else ToolPolicy(mode=mode)
         reg = self._lookup(name)
@@ -393,7 +409,7 @@ class Guard:
         """Checks that need the database. Returns a violation, a duplicate, or None."""
         name, agent = p.ctx["tool"], p.ctx["agent_id"]
         if p.tool.dedupe_window_seconds > 0:
-            dup = tx.find_duplicate(p.key, now - p.tool.dedupe_window_seconds, exclude_id)
+            dup = tx.find_duplicate(p.key, now - p.tool.dedupe_window_seconds, exclude_id, now=now)
             if dup is not None:
                 return dup
         if p.tool.rate_limit is not None:
@@ -417,12 +433,24 @@ class Guard:
                 )
         return None
 
+    @staticmethod
+    def _tool_ttls(policy: Policy) -> dict[str, float]:
+        return {name: tool.approval_ttl_seconds for name, tool in policy.tools.items()}
+
+    def _audit_expired(self, expired: Iterable[ActionRecord]) -> None:
+        for rec in expired:
+            self._audit(
+                "expired", tool=rec.tool, agent_id=rec.agent_id, action_id=rec.id, was=rec.status
+            )
+
     # -- allow mode --------------------------------------------------------------------
 
     def _execute_now(self, p: _Prepared, reg: _Registered) -> Outcome:
         now = self._now()
         action_id = _new_id()
+        expired: list[ActionRecord] = []
         with self.store.transaction() as tx:
+            expired = tx.expire_stale(now, tool_ttls=self._tool_ttls(p.policy))
             found = self._check_limits(tx, p, now)
             if found is None:
                 tx.insert(
@@ -430,6 +458,7 @@ class Guard:
                     status=ActionState.EXECUTING,
                     started_at=now,
                 )
+        self._audit_expired(expired)
         if isinstance(found, ActionRecord):
             return self._duplicate(p.ctx, found, p.logged)
         if isinstance(found, Violation):
@@ -522,11 +551,13 @@ class Guard:
         expires_at = now + p.tool.approval_ttl_seconds
         name = p.ctx["tool"]
         found: Violation | ActionRecord | None = None
+        expired: list[ActionRecord] = []
         with self.store.transaction() as tx:
+            expired = tx.expire_stale(now, tool_ttls=self._tool_ttls(p.policy))
             if p.tool.dedupe_window_seconds > 0:
-                found = tx.find_duplicate(p.key, now - p.tool.dedupe_window_seconds)
+                found = tx.find_duplicate(p.key, now - p.tool.dedupe_window_seconds, now=now)
             if found is None and p.tool.max_pending is not None:
-                waiting = tx.pending_count(name)
+                waiting = tx.pending_count(name, now=now)
                 if waiting >= p.tool.max_pending:
                     found = Violation(
                         Reason.QUEUE_FULL,
@@ -546,6 +577,7 @@ class Guard:
                     status=ActionState.PENDING,
                     expires_at=expires_at,
                 )
+        self._audit_expired(expired)
         if isinstance(found, ActionRecord):
             return self._duplicate(p.ctx, found, p.logged)
         if isinstance(found, Violation):
@@ -574,16 +606,23 @@ class Guard:
         return self.store.list_actions([ActionState.PENDING])
 
     def expire_stale(self) -> list[ActionRecord]:
-        expired = self.store.expire_stale(self._now())
-        for rec in expired:
-            self._audit(
-                "expired", tool=rec.tool, agent_id=rec.agent_id, action_id=rec.id, was=rec.status
-            )
+        policy, _ = self._active
+        expired = self.store.expire_stale(self._now(), tool_ttls=self._tool_ttls(policy))
+        self._audit_expired(expired)
         return expired
 
     def approve(self, action_id: str, *, by: str, note: str | None = None) -> ActionRecord:
         """Record a human approval. This does not run the action: see :meth:`run_approved`."""
-        return approve_action(self.store, self.audit, action_id, by=by, now=self._now(), note=note)
+        policy, _ = self._active
+        return approve_action(
+            self.store,
+            self.audit,
+            action_id,
+            by=by,
+            now=self._now(),
+            note=note,
+            tool_ttls=self._tool_ttls(policy),
+        )
 
     def reject(self, action_id: str, *, by: str, reason: str | None = None) -> ActionRecord:
         return reject_action(self.store, self.audit, action_id, by=by, now=self._now(), note=reason)
@@ -634,6 +673,49 @@ class Guard:
             Status.BLOCKED, rec.tool, msg, action_id=rec.id, reason=Reason.APPROVAL_EXPIRED
         )
 
+    def _close_approved(
+        self,
+        ctx: dict[str, Any],
+        action_id: str,
+        now: float,
+        reason: Reason,
+        message: str,
+        *,
+        logged: Any,
+        hidden: set[str],
+    ) -> Outcome:
+        """Permanently stop an approved action (it will never run)."""
+        with self.store.transaction() as tx:
+            closed = tx.update(
+                action_id,
+                expect=(ActionState.APPROVED,),
+                status=ActionState.BLOCKED,
+                reason=str(reason),
+                finished_at=now,
+            )
+        if not closed:  # another worker claimed (or someone rejected) it meanwhile
+            status = self.store.get(action_id).status
+            msg = f"action {action_id} is now {status}, not approved; this worker did not run it."
+            return self._block(ctx, Reason.NOT_APPROVED, msg, logged, action_id)
+        return self._block(ctx, reason, message, logged, action_id, hidden=hidden)
+
+    def _unclaimed_outcome(
+        self,
+        ctx: dict[str, Any],
+        action_id: str,
+        current_status: ActionState,
+        logged: Any,
+        hidden: set[str],
+    ) -> Outcome:
+        if current_status in (ActionState.EXECUTING, ActionState.EXECUTED):
+            msg = f"action {action_id} was claimed by another worker; it was not run twice."
+            return Outcome(Status.DUPLICATE, ctx["tool"], msg, action_id=action_id)
+        if current_status is ActionState.EXPIRED:
+            msg = f"action {action_id} expired; it was not run."
+            return self._block(ctx, Reason.APPROVAL_EXPIRED, msg, logged, action_id, hidden=hidden)
+        msg = f"action {action_id} is {current_status}, not approved; it was not run."
+        return self._block(ctx, Reason.NOT_APPROVED, msg, logged, action_id, hidden=hidden)
+
     def execute_approved(self, action_id: str) -> Outcome:
         """Re-validate an approved action against *current* conditions, then run it.
 
@@ -657,24 +739,6 @@ class Guard:
         }
         now = self._now()
 
-        def close(reason: Reason, message: str) -> Outcome:
-            """Permanently stop this approved action (it will never run)."""
-            with self.store.transaction() as tx:
-                closed = tx.update(
-                    action_id,
-                    expect=(ActionState.APPROVED,),
-                    status=ActionState.BLOCKED,
-                    reason=str(reason),
-                    finished_at=now,
-                )
-            if not closed:  # another worker claimed (or someone rejected) it meanwhile
-                status = self.store.get(action_id).status
-                msg = (
-                    f"action {action_id} is now {status}, not approved; this worker did not run it."
-                )
-                return self._block(ctx, Reason.NOT_APPROVED, msg, logged, action_id)
-            return self._block(ctx, reason, message, logged, action_id, hidden=hidden)
-
         if rec.status is not ActionState.APPROVED:
             msg = f"action {action_id} is {rec.status}, not approved; it was not run."
             return self._block(ctx, Reason.NOT_APPROVED, msg, logged, action_id)
@@ -686,13 +750,24 @@ class Guard:
         if stale is not None:
             return stale
         if digest(rec.args) != rec.args_digest:
-            return close(
+            return self._close_approved(
+                ctx,
+                action_id,
+                now,
                 Reason.ARGUMENTS_CHANGED,
                 "the stored arguments no longer match what was queued and approved.",
+                logged=logged,
+                hidden=hidden,
             )
         if mode not in (Mode.ALLOW, Mode.APPROVE):
-            return close(
-                Reason.POLICY_CHANGED, f"'{rec.tool}' is now in '{mode}' mode under current policy."
+            return self._close_approved(
+                ctx,
+                action_id,
+                now,
+                Reason.POLICY_CHANGED,
+                f"'{rec.tool}' is now in '{mode}' mode under current policy.",
+                logged=logged,
+                hidden=hidden,
             )
         reg = self._lookup(rec.tool)
         if reg is None:
@@ -701,17 +776,34 @@ class Guard:
         effective = tool if tool is not None else ToolPolicy(mode=mode)
         prepared = self._prepare(ctx, policy, effective, reg, rec.args)
         if isinstance(prepared, Violation):
-            return close(prepared.reason, f"{prepared.detail} (checked against current policy)")
+            return self._close_approved(
+                ctx,
+                action_id,
+                now,
+                prepared.reason,
+                f"{prepared.detail} (checked against current policy)",
+                logged=logged,
+                hidden=hidden,
+            )
         if prepared.args_digest != rec.args_digest:
-            return close(
+            return self._close_approved(
+                ctx,
+                action_id,
+                now,
                 Reason.POLICY_CHANGED,
                 "the current policy would change the approved arguments; request it again.",
+                logged=logged,
+                hidden=hidden,
             )
 
         found: Violation | ActionRecord | None = None
         claimed = False
+        expired: list[ActionRecord] = []
+        current_status: ActionState
         with self.store.transaction() as tx:
-            if tx.get(action_id).status is ActionState.APPROVED:
+            expired = tx.expire_stale(now, tool_ttls=self._tool_ttls(policy), exclude_id=action_id)
+            current_status = tx.get(action_id).status
+            if current_status is ActionState.APPROVED:
                 found = self._check_limits(tx, prepared, now, exclude_id=action_id)
                 if found is None:
                     claimed = tx.update(
@@ -733,6 +825,7 @@ class Guard:
                         reason=reason,
                         finished_at=now,
                     )
+        self._audit_expired(expired)
         if isinstance(found, ActionRecord):
             return self._duplicate(ctx, found, logged)
         if isinstance(found, Violation):
@@ -742,8 +835,7 @@ class Guard:
                 )
             return self._block(ctx, found.reason, found.detail, logged, action_id, hidden=hidden)
         if not claimed:
-            msg = f"action {action_id} was claimed by another worker; it was not run twice."
-            return Outcome(Status.DUPLICATE, rec.tool, msg, action_id=action_id)
+            return self._unclaimed_outcome(ctx, action_id, current_status, logged, hidden)
         return self._run(prepared, action_id, reg, approved_by=rec.decided_by or "unknown")
 
 
@@ -758,12 +850,14 @@ def approve_action(
     by: str,
     now: float,
     note: str | None = None,
+    tool_ttls: Mapping[str, float] | None = None,
 ) -> ActionRecord:
     try:
-        rec = store.approve(action_id, by=by, now=now, note=note)
-    except ApprovalExpiredError:
-        rec = store.get(action_id)
-        audit.append("expired", tool=rec.tool, agent_id=rec.agent_id, action_id=rec.id)
+        rec = store.approve(action_id, by=by, now=now, note=note, tool_ttls=tool_ttls)
+    except ApprovalExpiredError as exc:
+        if not exc.already_expired:
+            rec = store.get(action_id)
+            audit.append("expired", tool=rec.tool, agent_id=rec.agent_id, action_id=rec.id)
         raise
     fields = {"tool": rec.tool, "agent_id": rec.agent_id, "action_id": rec.id, "by": by}
     extra = {"note": note} if note else {}

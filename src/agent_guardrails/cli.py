@@ -23,6 +23,8 @@ from .audit import AuditLog, verify_log
 from .errors import GuardrailError
 from .guard import HOME_ENV, approve_action, default_home, reject_action
 from .killswitch import KillSwitch
+from .policy import DEFAULT_REDACT_FIELDS
+from .redaction import Redactor
 from .store import ActionRecord, ActionState, ActionStore
 
 
@@ -32,13 +34,14 @@ def _iso(ts: float | None) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
-def _record_dict(rec: ActionRecord) -> dict[str, Any]:
+def _record_dict(rec: ActionRecord, *, redactor: Redactor | None = None) -> dict[str, Any]:
+    args = redactor.redact(rec.args) if redactor is not None else rec.args
     return {
         "id": rec.id,
         "status": str(rec.status),
         "tool": rec.tool,
         "agent_id": rec.agent_id,
-        "args": rec.args,
+        "args": args,
         "args_digest": rec.args_digest,
         "cost": rec.cost,
         "created_at": _iso(rec.created_at),
@@ -86,8 +89,15 @@ def _cmd_queue_list(ctx: _Ctx, args: argparse.Namespace) -> int:
     ctx.expire(store, audit)
     statuses = None if args.status == "all" else [ActionState(args.status)]
     records = store.list_actions(statuses)
+    redactor = Redactor(DEFAULT_REDACT_FIELDS)
     if args.json:
-        print(json.dumps([_record_dict(r) for r in records], indent=2, ensure_ascii=False))
+        print(
+            json.dumps(
+                [_record_dict(r, redactor=redactor) for r in records],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         return 0
     if not records:
         print(f"No {args.status} actions.")
@@ -95,7 +105,7 @@ def _cmd_queue_list(ctx: _Ctx, args: argparse.Namespace) -> int:
     header = f"{'ID':<22} {'STATUS':<9} {'TOOL':<18} {'AGENT':<12} {'EXPIRES (UTC)':<21} ARGS"
     print(header)
     for r in records:
-        preview = json.dumps(r.args, ensure_ascii=False)
+        preview = json.dumps(redactor.redact(r.args), ensure_ascii=False)
         if len(preview) > 48:
             preview = preview[:45] + "..."
         print(

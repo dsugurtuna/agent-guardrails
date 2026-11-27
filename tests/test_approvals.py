@@ -297,3 +297,98 @@ def test_lengthened_ttl_does_not_revive_an_old_approval(
     clock.advance(601)  # past the 600s it was requested with
     assert guard.execute_approved(action_id).reason is Reason.APPROVAL_EXPIRED
     assert backend.calls == []
+
+
+def test_expired_pending_action_does_not_block_retry_or_quota(
+    make_guard: MakeGuard, clock: FakeClock, backend: Backend
+) -> None:
+    guard = make_guard(_policy_with(max_pending=1, approval_ttl_seconds=600))
+    first = guard.call("send_email", ARGS)
+    assert first.status is Status.QUEUED and first.action_id is not None
+
+    # Advance past expiry without calling pending() or run_approved() first.
+    clock.advance(601)
+    retried = guard.call("send_email", ARGS)
+    assert retried.status is Status.QUEUED
+    assert retried.action_id is not None and retried.action_id != first.action_id
+    assert guard.store.get(first.action_id).status is ActionState.EXPIRED
+
+    # Late approval of the expired action still fails cleanly without double-auditing.
+    with pytest.raises(ApprovalExpiredError):
+        guard.approve(first.action_id, by="alice")
+    expired_events = [
+        json.loads(line)
+        for line in guard.audit.path.read_text().splitlines()
+        if json.loads(line).get("event") == "expired"
+        and json.loads(line).get("action_id") == first.action_id
+    ]
+    assert len(expired_events) == 1
+
+    guard.approve(retried.action_id, by="alice")
+    [outcome] = guard.run_approved()
+    assert outcome.status is Status.EXECUTED
+    assert len(backend.calls) == 1
+
+
+def test_expired_approved_action_does_not_block_fresh_execution(
+    make_guard: MakeGuard, email_policy: Policy, clock: FakeClock, backend: Backend
+) -> None:
+    guard = make_guard(email_policy)
+    first_id = _queue(guard)
+    guard.approve(first_id, by="alice")
+    clock.advance(601)
+
+    guard.set_policy(_policy_with(mode="allow"))
+    outcome = guard.call("send_email", ARGS)
+    assert outcome.status is Status.EXECUTED
+    assert guard.store.get(first_id).status is ActionState.EXPIRED
+    assert len(backend.calls) == 1
+
+
+def test_pending_and_approve_respect_shortened_ttl(
+    make_guard: MakeGuard, email_policy: Policy, clock: FakeClock
+) -> None:
+    guard = make_guard(email_policy)
+    first_id = _queue(guard)
+    second_id = _queue(
+        guard, {"to": ["b@example.com"], "subject": "Update", "body": "Second item."}
+    )
+    guard.set_policy(_policy_with(approval_ttl_seconds=60))
+    clock.advance(120)
+
+    # Approving directly sees the shortened TTL before pending() sweeps.
+    with pytest.raises(ApprovalExpiredError):
+        guard.approve(first_id, by="alice")
+    assert guard.store.get(first_id).status is ActionState.EXPIRED
+
+    # pending() also expires the remaining action under the shortened TTL.
+    assert guard.pending() == []
+    assert guard.store.get(second_id).status is ActionState.EXPIRED
+
+
+def test_store_find_duplicate_and_pending_count_ignore_expired_rows(tmp_path: Path) -> None:
+    from agent_guardrails import ActionStore
+
+    store = ActionStore(tmp_path / "queue.db")
+    with store.transaction() as tx:
+        tx.insert(
+            id="act_stale",
+            tool="send",
+            agent_id="default",
+            mode="approve",
+            status=ActionState.PENDING,
+            args_json='{"to":"a@example.com"}',
+            args_digest="d1",
+            dedupe_key="k1",
+            cost=0.0,
+            policy_hash="p1",
+            created_at=100.0,
+            expires_at=200.0,
+        )
+        assert tx.find_duplicate("k1", 0.0, now=150.0) is not None
+        assert tx.pending_count("send", now=150.0) == 1
+        assert tx.find_duplicate("k1", 0.0, now=200.0) is None
+        assert tx.pending_count("send", now=200.0) == 0
+        # Default now uses wall-clock time, so old rows are ignored too.
+        assert tx.find_duplicate("k1", 0.0) is None
+        assert tx.pending_count("send") == 0

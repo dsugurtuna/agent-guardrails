@@ -38,6 +38,10 @@ class InvalidTransitionError(GuardrailError):
 class ApprovalExpiredError(InvalidTransitionError):
     """The action's approval window has passed; it can no longer be approved or executed."""
 
+    def __init__(self, *args: object, already_expired: bool = False) -> None:
+        super().__init__(*args)
+        self.already_expired = already_expired
+
 
 class AuditIntegrityError(GuardrailError):
     """The audit log is corrupt, so a new record cannot be chained onto it safely."""

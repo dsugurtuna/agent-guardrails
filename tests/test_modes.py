@@ -322,3 +322,50 @@ def test_redact_hook_values_do_not_leak_through_block_details(tmp_path: Path) ->
     guard = Guard(Policy.from_dict(EMAIL_POLICY), home=tmp_path, redact_hook=hook)
     guard.call("send_email", {"to": ["leak.me@evil.test"], "subject": "s", "body": "b"})
     assert "leak.me" not in guard.audit.path.read_text()
+
+
+def test_non_mapping_args_are_blocked_not_raised(
+    make_guard: MakeGuard, email_policy: Policy
+) -> None:
+    guard = make_guard(email_policy)
+    bad_inputs = (
+        "oops",
+        ["a", "b"],
+        [("password", "secret-val")],
+        [{"password": "hunter2"}],
+        42,
+    )
+    for bad_args in bad_inputs:
+        outcome = guard.call("search_calendar", bad_args)  # type: ignore[arg-type]
+        assert outcome.status is Status.BLOCKED
+        assert outcome.reason is Reason.INVALID_ARGUMENTS
+    log_text = guard.audit.path.read_text()
+    assert "hunter2" not in log_text
+    assert verify_log(guard.audit.path).ok
+
+
+def test_malformed_tool_name_records_policy_hash_and_redacts_args(
+    make_guard: MakeGuard, email_policy: Policy
+) -> None:
+    guard = make_guard(email_policy)
+    outcome = guard.call("send\ud800", {"password": "very-secret-value"})
+    assert outcome.status is Status.BLOCKED
+    assert outcome.reason is Reason.UNKNOWN_TOOL
+    log_text = guard.audit.path.read_text()
+    assert "very-secret-value" not in log_text
+    record = json.loads(log_text.splitlines()[-1])
+    assert record["policy_hash"] == email_policy.fingerprint()
+    assert verify_log(guard.audit.path).ok
+
+
+def test_short_redacted_values_do_not_corrupt_block_detail(
+    make_guard: MakeGuard, email_policy: Policy
+) -> None:
+    guard = make_guard(email_policy)
+    for short in ("a", "1", "not"):
+        outcome = guard.call("send_email", {"to": ["x@evil.test"], "subject": "hi", "body": short})
+        assert outcome.reason is Reason.RECIPIENT_NOT_ALLOWED
+    records = [json.loads(line) for line in guard.audit.path.read_text().splitlines()]
+    assert all(
+        r["detail"] == "recipient domain not on the allow-list: x@evil.test" for r in records
+    )

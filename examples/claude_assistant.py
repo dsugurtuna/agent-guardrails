@@ -14,13 +14,22 @@ suite; ``tests/test_claude_adapter.py`` covers the loop with a fake client.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
-import anthropic
+try:
+    import anthropic
+except ModuleNotFoundError:  # optional extra; handled cleanly in main()
+    anthropic = None
 
 from agent_guardrails.adapters.claude import DEFAULT_MODEL, run_tool_loop, tool_definition
-from email_calendar_assistant import FakeBackend, build_guard
+
+_EXAMPLES_DIR = str(Path(__file__).resolve().parent)
+if _EXAMPLES_DIR not in sys.path:
+    sys.path.insert(0, _EXAMPLES_DIR)
+
+from email_calendar_assistant import FakeBackend, build_guard  # noqa: E402
 
 SYSTEM = (
     "You are an email and calendar assistant for staff at example.com. Today is 2026-09-30. "
@@ -75,6 +84,12 @@ def main() -> int:
             print(outcome.status, outcome.as_tool_result())
         print("Fake outbox:", backend.outbox)
         return 0
+
+    if anthropic is None:
+        print(
+            'Missing optional dependency. Install with: pip install "agent-guardrails[anthropic]"'
+        )
+        return 1
 
     client = anthropic.Anthropic()
     try:

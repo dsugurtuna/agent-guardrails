@@ -128,17 +128,17 @@ def run_tool_loop(
     model: str = DEFAULT_MODEL,
     max_tokens: int = 16000,
     max_turns: int = 10,
-    server_side_fallback: bool = True,
+    server_side_fallback: bool = False,
     agent_id: str | None = None,
     **create_kwargs: Any,
 ) -> ToolLoopResult:
     """Call Claude, route its tool calls through ``guard``, and repeat until it is done.
 
-    ``client`` is an ``anthropic.Anthropic`` instance. With ``server_side_fallback``
-    (the default) requests go through ``client.beta.messages.create`` with
-    ``fallbacks="default"``, so a request the model declines is retried server-side
-    on Anthropic's recommended fallback model; set it to ``False`` to use
-    ``client.messages.create`` instead. Extra keyword arguments (``system``,
+    ``client`` is an ``anthropic.Anthropic`` instance (or compatible Bedrock/Vertex
+    client). By default requests use ``client.messages.create``. Set
+    ``server_side_fallback=True`` to opt into ``client.beta.messages.create`` with
+    ``fallbacks="default"`` so requests the model declines are retried server-side on
+    Anthropic's recommended fallback model. Extra keyword arguments (``system``,
     ``output_config``, ...) are passed through unchanged.
 
     The loop stops *without running that turn's tools* when ``stop_reason`` is

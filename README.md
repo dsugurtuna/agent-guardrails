@@ -7,7 +7,7 @@ kill switch. Small, framework-agnostic Python.
 **Read freely, write carefully.**
 
 [![CI](https://github.com/dsugurtuna/agent-guardrails/actions/workflows/ci.yml/badge.svg)](https://github.com/dsugurtuna/agent-guardrails/actions/workflows/ci.yml)
-![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-green)
 
 ## The problem
@@ -161,12 +161,13 @@ result = run_tool_loop(
 print(result.text, [str(o.status) for o in result.outcomes])
 ```
 
-`run_tool_loop` defaults to `claude-opus-5-5`, sends every `tool_use` block through the
-guard, returns all results in one message, flags blocked and failed calls with
-`is_error`, never runs tools on a `refusal` or on a `max_tokens` stop part-way through a
-tool call, and opts into server-side refusal fallbacks (`fallbacks="default"`); pass
-`server_side_fallback=False` to use the plain Messages endpoint. Server-side tools
-(web search, web fetch, code execution) and MCP connector tools run on Anthropic's
+`run_tool_loop` defaults to `claude-opus-5-5` via the standard `client.messages.create`
+endpoint (compatible with Anthropic, Bedrock, and Vertex clients), sends every `tool_use`
+block through the guard, returns all results in one message, flags blocked and failed
+calls with `is_error`, and never runs tools on a `refusal` or on a `max_tokens` stop
+part-way through a tool call. Pass `server_side_fallback=True` to opt into server-side
+refusal fallbacks (`client.beta.messages.create` with `fallbacks="default"`). Server-side
+tools (web search, web fetch, code execution) and MCP connector tools run on Anthropic's
 side and are not guarded; see the threat model. See
 [`examples/claude_assistant.py`](examples/claude_assistant.py) (needs credentials; the
 tests use a fake client).

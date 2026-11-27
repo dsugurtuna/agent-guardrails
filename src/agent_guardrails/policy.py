@@ -7,6 +7,7 @@ not be silently ignored.
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
@@ -86,6 +87,29 @@ _APPLICABLE: dict[str, tuple[str, ...]] = {
 }
 
 
+def _matches_item_type(choice: str | int | float | bool, item_type: type[Any]) -> bool:
+    if item_type is bool:
+        return isinstance(choice, bool)
+    if item_type is int:
+        return isinstance(choice, int) and not isinstance(choice, bool)
+    if item_type is float:
+        return (
+            isinstance(choice, int | float)
+            and not isinstance(choice, bool)
+            and math.isfinite(float(choice))
+        )
+    return isinstance(choice, str)
+
+
+def _is_existing_file(source: str) -> bool:
+    if not source or "\n" in source or "\r" in source or "\x00" in source:
+        return False
+    try:
+        return Path(source).is_file()
+    except OSError:
+        return False
+
+
 class ArgSpec(_Strict):
     """A small, YAML-friendly argument schema. Use ``args_model`` in Python for more.
 
@@ -102,7 +126,7 @@ class ArgSpec(_Strict):
     min_length: int | None = Field(default=None, ge=0)
     max_length: int | None = Field(default=None, ge=0)
     pattern: str | None = None
-    choices: list[str | int | float] | None = None
+    choices: list[str | int | float | bool] | None = None
     ge: float | None = None
     le: float | None = None
     min_items: int | None = Field(default=None, ge=0)
@@ -121,12 +145,22 @@ class ArgSpec(_Strict):
                 f"{', '.join(misplaced)} does not apply to type '{self.type}' "
                 f"(allowed: {', '.join(allowed) or 'choices only'})"
             )
+        if self.choices is not None:
+            if not self.choices:
+                raise ValueError("choices must not be empty")
+            item_type = _PY_TYPES[self.type]
+            for choice in self.choices:
+                if not _matches_item_type(choice, item_type):
+                    raise ValueError(f"choices entry {choice!r} does not match type '{self.type}'")
         return self
 
     def to_field(self) -> tuple[Any, Any]:
-        value_type: Any = _PY_TYPES[self.type]
+        item_type: Any = _PY_TYPES[self.type]
         if self.choices is not None:
-            value_type = Literal[tuple(self.choices)]
+            choices = tuple(float(c) if item_type is float else c for c in self.choices)
+            value_type: Any = Literal[choices]
+        else:
+            value_type = item_type
         value_constraints = {
             key: getattr(self, key)
             for key in _STRING_KEYS + _NUMBER_KEYS
@@ -303,7 +337,7 @@ class Policy(BaseModel):
         """Load from a YAML file (a ``Path``, or a string naming an existing file) or text."""
         if isinstance(source, Path):
             text = source.read_text(encoding="utf-8")
-        elif "\n" not in source and Path(source).is_file():
+        elif _is_existing_file(source):
             text = Path(source).read_text(encoding="utf-8")
         else:
             text = source

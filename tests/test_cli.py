@@ -138,3 +138,37 @@ def test_secrets_of_allowed_calls_are_not_kept_in_the_queue(
     # De-duplication still recognises the retry.
     again = guard.call("login", {"user": "sam", "password": "hunter2-very-secret"})
     assert again.status is Status.DUPLICATE
+
+
+def test_queue_list_redacts_secrets_while_show_keeps_them(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    guard = Guard(Policy.from_yaml("tools: {login: {mode: approve}}\n"), home=tmp_path)
+    outcome = guard.call(
+        "login",
+        {"user": "sam", "password": "hunter2-very-secret", "api_key": "sk-secret-999"},
+    )
+    assert outcome.action_id is not None
+
+    home = ["--home", str(tmp_path)]
+    assert main([*home, "queue", "list"]) == 0
+    table_out = capsys.readouterr().out
+    assert "hunter2" not in table_out
+    assert "sk-secret" not in table_out
+    assert "[REDACTED]" in table_out
+
+    assert main([*home, "queue", "list", "--json"]) == 0
+    json_out = capsys.readouterr().out
+    assert "hunter2" not in json_out
+    assert "sk-secret" not in json_out
+    [entry] = json.loads(json_out)
+    assert entry["args"] == {"user": "sam", "password": "[REDACTED]", "api_key": "[REDACTED]"}
+
+    # queue show still displays the full arguments to the reviewer before deciding.
+    assert main([*home, "queue", "show", outcome.action_id]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["args"] == {
+        "user": "sam",
+        "password": "hunter2-very-secret",
+        "api_key": "sk-secret-999",
+    }

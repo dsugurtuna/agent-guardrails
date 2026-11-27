@@ -41,7 +41,7 @@ policy.fingerprint()  # SHA-256, recorded with every decision
 | `rate_limit` | none | `{max_calls, window_seconds, per_agent}`. Counts calls that ran (including failed ones) in the trailing window, across all agents unless `per_agent: true`. |
 | `cost` | none | `{fixed: 0.5}` or `{field: amount}`. Charged to the calling agent's budget. A `field` value must be a finite number >= 0. |
 | `approval_ttl_seconds` | `3600` | How long a queued action stays valid, from when it was requested. After this it can be neither approved nor run. When an approved action is about to run, the shorter of the TTL it was requested with and the TTL in the current policy applies, so shortening the TTL also retires older approvals. |
-| `dedupe_window_seconds` | `3600` | Identical actions within this window are not repeated. `0` disables de-duplication. While on, an identical action that is still pending or approved counts as a duplicate however old it is. |
+| `dedupe_window_seconds` | `3600` | Identical actions within this window are not repeated. `0` disables de-duplication. While on, an identical action that is still pending or approved (until its approval TTL expires) counts as a duplicate. |
 | `max_pending` | none | Maximum number of this tool's actions awaiting approval at once. |
 | `redact_fields` | `[]` | Extra argument keys to redact for this tool (for example `body`). |
 
@@ -58,7 +58,8 @@ policy.fingerprint()  # SHA-256, recorded with every decision
 | `min_items`, `max_items` | lists | List length bounds. |
 
 A constraint that cannot apply to the type (for example `pattern` on an `int`, or
-`ge` on a `list[str]`) is a `PolicyError`, not silently ignored.
+`ge` on a `list[str]`), an empty `choices` list, or `choices` entries that do not
+match the declared type are a `PolicyError`, not silently ignored.
 
 For anything richer (nested objects, dates, custom validators) use `args_model` with a
 pydantic model in Python. Set `model_config = ConfigDict(extra="forbid")` on it if

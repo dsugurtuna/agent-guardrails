@@ -208,3 +208,61 @@ def test_constraints_that_cannot_apply_fail_loudly(spec: dict[str, object]) -> N
     # A constraint that would be silently ignored is as dangerous as a typo.
     with pytest.raises(PolicyError, match="does not apply"):
         Policy.from_dict({"tools": {"t": {"mode": "allow", "args": {"x": spec}}}})
+
+
+def test_from_yaml_handles_long_single_line_policies_without_enametoolong() -> None:
+    tools = ", ".join(f"tool_{i:02d}: {{mode: allow}}" for i in range(20))
+    single_line = f"{{version: 1, default_mode: block, tools: {{{tools}}}}}"
+    assert len(single_line) > 300 and "\n" not in single_line
+    policy = Policy.from_yaml(single_line)
+    assert policy.mode_for("tool_19") is Mode.ALLOW
+
+    with pytest.raises(PolicyError, match="mapping"):
+        Policy.from_yaml("a" * 300)
+    with pytest.raises(PolicyError):
+        Policy.from_yaml("tools: {x: {mode: allow}}\x00")
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"type": "str", "choices": []},
+        {"type": "int", "choices": ["admin"]},
+        {"type": "int", "choices": [True]},
+        {"type": "float", "choices": ["1.5"]},
+        {"type": "str", "choices": [1]},
+        {"type": "bool", "choices": [1]},
+        {"type": "list[int]", "choices": ["1"]},
+    ],
+)
+def test_invalid_choices_fail_loudly(spec: dict[str, object]) -> None:
+    with pytest.raises(PolicyError, match="choices"):
+        Policy.from_dict({"tools": {"t": {"mode": "allow", "args": {"x": spec}}}})
+
+
+def test_typed_choices_enforce_declared_type() -> None:
+    policy = Policy.from_dict(
+        {
+            "tools": {
+                "t": {
+                    "mode": "allow",
+                    "args": {
+                        "count": {"type": "int", "choices": [1, 2]},
+                        "weight": {"type": "float", "choices": [0, 1.5]},
+                        "flag": {"type": "bool", "choices": [True]},
+                    },
+                }
+            }
+        }
+    )
+    model = policy.tools["t"].schema_model
+    assert model is not None
+    ok = model.model_validate({"count": 1, "weight": 0, "flag": True})
+    assert ok.model_dump() == {"count": 1, "weight": 0.0, "flag": True}
+    for bad in (
+        {"count": "1", "weight": 0, "flag": True},
+        {"count": 1, "weight": 2.5, "flag": True},
+        {"count": 1, "weight": 0, "flag": False},
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(bad)

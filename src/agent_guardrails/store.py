@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -158,22 +158,29 @@ class Tx:
         return float(self.conn.execute(sql, params).fetchone()[0])
 
     def find_duplicate(
-        self, dedupe_key: str, since: float, exclude_id: str | None = None
+        self,
+        dedupe_key: str,
+        since: float,
+        exclude_id: str | None = None,
+        now: float | None = None,
     ) -> ActionRecord | None:
         """An identical action that is awaiting approval, or that ran since ``since``.
 
-        Pending and approved actions count whatever their age (their TTL bounds them).
-        An action still marked ``executing`` counts only within the window, so a
-        process that crashed mid-call does not block that action for ever.
+        Unexpired pending and approved actions count (their TTL bounds them; expired
+        rows are ignored). An action still marked ``executing`` counts only within the
+        window, so a process that crashed mid-call does not block that action for ever.
         """
+        effective_now = time.time() if now is None else now
         sql = (
             f"SELECT * FROM actions WHERE dedupe_key = ? AND ("  # noqa: S608
-            f"status IN ({_placeholders(len(AWAITING_STATES))}) "
+            f"(status IN ({_placeholders(len(AWAITING_STATES))}) "
+            "AND (expires_at IS NULL OR expires_at > ?)) "
             "OR (status IN (?, ?) AND COALESCE(finished_at, started_at) >= ?))"
         )
         params: list[Any] = [
             dedupe_key,
             *AWAITING_STATES,
+            effective_now,
             ActionState.EXECUTING,
             ActionState.EXECUTED,
             since,
@@ -185,12 +192,50 @@ class Tx:
         row = self.conn.execute(sql, params).fetchone()
         return ActionRecord.from_row(row) if row is not None else None
 
-    def pending_count(self, tool: str) -> int:
+    def pending_count(self, tool: str, now: float | None = None) -> int:
+        effective_now = time.time() if now is None else now
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM actions WHERE tool = ? AND status = ?",
-            (tool, ActionState.PENDING),
+            "SELECT COUNT(*) FROM actions WHERE tool = ? AND status = ? "
+            "AND (expires_at IS NULL OR expires_at > ?)",
+            (tool, ActionState.PENDING, effective_now),
         ).fetchone()
         return int(row[0])
+
+    def expire_stale(
+        self,
+        now: float,
+        *,
+        tool_ttls: Mapping[str, float] | None = None,
+        exclude_id: str | None = None,
+    ) -> list[ActionRecord]:
+        """Mark pending/approved actions past their TTL as expired; return them."""
+        sql = f"SELECT * FROM actions WHERE status IN ({_placeholders(len(AWAITING_STATES))})"  # noqa: S608
+        params: list[Any] = [*AWAITING_STATES]
+        if tool_ttls is None:
+            sql += " AND expires_at IS NOT NULL AND expires_at <= ?"
+            params.append(now)
+        else:
+            sql += " AND expires_at IS NOT NULL"
+        if exclude_id is not None:
+            sql += " AND id != ?"
+            params.append(exclude_id)
+        rows = self.conn.execute(sql, params).fetchall()
+        expired: list[ActionRecord] = []
+        for row in rows:
+            rec = ActionRecord.from_row(row)
+            effective_expiry = rec.expires_at
+            if tool_ttls is not None and rec.tool in tool_ttls and effective_expiry is not None:
+                effective_expiry = min(effective_expiry, rec.created_at + tool_ttls[rec.tool])
+            if effective_expiry is not None and effective_expiry <= now:
+                self.update(
+                    rec.id,
+                    expect=AWAITING_STATES,
+                    status=ActionState.EXPIRED,
+                    reason="approval_expired",
+                    finished_at=now,
+                )
+                expired.append(rec)
+        return expired
 
     def insert(self, **values: Any) -> None:
         cols = ", ".join(values)
@@ -302,53 +347,59 @@ class ActionStore:
 
     # -- lifecycle ------------------------------------------------------------------
 
-    def expire_stale(self, now: float) -> list[ActionRecord]:
+    def expire_stale(
+        self, now: float, *, tool_ttls: Mapping[str, float] | None = None
+    ) -> list[ActionRecord]:
         """Mark pending/approved actions past their TTL as expired; return them."""
         with self.transaction() as tx:
-            rows = tx.conn.execute(
-                "SELECT * FROM actions WHERE status IN (?, ?) AND expires_at IS NOT NULL "
-                "AND expires_at <= ?",
-                (ActionState.PENDING, ActionState.APPROVED, now),
-            ).fetchall()
-            expired = [ActionRecord.from_row(r) for r in rows]
-            for rec in expired:
-                tx.update(
-                    rec.id,
-                    expect=(ActionState.PENDING, ActionState.APPROVED),
-                    status=ActionState.EXPIRED,
-                    reason="approval_expired",
-                    finished_at=now,
-                )
-        return expired
+            return tx.expire_stale(now, tool_ttls=tool_ttls)
 
     def approve(
-        self, action_id: str, *, by: str, now: float, note: str | None = None
+        self,
+        action_id: str,
+        *,
+        by: str,
+        now: float,
+        note: str | None = None,
+        tool_ttls: Mapping[str, float] | None = None,
     ) -> ActionRecord:
         """pending -> approved. Raises if the action is not pending or has expired."""
         expired = False
+        already_expired = False
         with self.transaction() as tx:
             rec = tx.get(action_id)
-            if rec.status is not ActionState.PENDING:
+            if rec.status is ActionState.EXPIRED:
+                already_expired = True
+            elif rec.status is not ActionState.PENDING:
                 raise InvalidTransitionError(
                     f"action {action_id} is {rec.status}; only pending actions can be approved"
                 )
-            if rec.expires_at is not None and rec.expires_at <= now:
-                tx.update(
-                    action_id,
-                    status=ActionState.EXPIRED,
-                    reason="approval_expired",
-                    finished_at=now,
-                )
-                expired = True
             else:
-                tx.update(
-                    action_id,
-                    expect=(ActionState.PENDING,),
-                    status=ActionState.APPROVED,
-                    decided_at=now,
-                    decided_by=by,
-                    decision_note=note,
-                )
+                effective_expiry = rec.expires_at
+                if tool_ttls is not None and rec.tool in tool_ttls and effective_expiry is not None:
+                    effective_expiry = min(effective_expiry, rec.created_at + tool_ttls[rec.tool])
+                if effective_expiry is not None and effective_expiry <= now:
+                    tx.update(
+                        action_id,
+                        status=ActionState.EXPIRED,
+                        reason="approval_expired",
+                        finished_at=now,
+                    )
+                    expired = True
+                else:
+                    tx.update(
+                        action_id,
+                        expect=(ActionState.PENDING,),
+                        status=ActionState.APPROVED,
+                        decided_at=now,
+                        decided_by=by,
+                        decision_note=note,
+                    )
+        if already_expired:
+            raise ApprovalExpiredError(
+                f"action {action_id} expired before it was approved",
+                already_expired=True,
+            )
         if expired:
             raise ApprovalExpiredError(f"action {action_id} expired before it was approved")
         return self.get(action_id)

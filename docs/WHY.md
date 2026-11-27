@@ -117,8 +117,9 @@ Because the guard, not the SDK, must decide whether each function runs, and beca
 some turns must run no tools at all: a `refusal`, or a `max_tokens` stop part-way
 through a tool call (whose input may be truncated). The loop is short enough to read
 in full. It routes every `tool_use` block through the guard, returns
-all results in one message, flags blocked and failed calls with `is_error`, and opts
-into server-side refusal fallbacks by default.
+all results in one message, flags blocked and failed calls with `is_error`, uses the
+standard Messages endpoint by default (supporting Anthropic, Bedrock, and Vertex
+clients), and offers opt-in server-side refusal fallbacks (`server_side_fallback=True`).
 
 **Why pydantic and YAML, with unknown keys rejected?**
 Because a policy is security configuration: a typo such as `recipents:` must fail

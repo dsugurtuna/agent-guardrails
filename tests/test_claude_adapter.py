@@ -97,11 +97,12 @@ def test_full_loop_with_mixed_outcomes(
     ]
     assert backend.names() == ["search_calendar"]
 
-    # Requests used the beta endpoint with server-side fallbacks and the default model.
-    sent = client.beta.messages.requests
+    # By default, requests use the standard messages endpoint with DEFAULT_MODEL.
+    sent = client.messages.requests
     assert all(r["model"] == DEFAULT_MODEL == "claude-opus-5-5" for r in sent)
-    assert all(r["betas"] == [FALLBACK_BETA] and r["fallbacks"] == "default" for r in sent)
+    assert all("betas" not in r and "fallbacks" not in r for r in sent)
     assert sent[0]["system"] == "You are an assistant."
+    assert client.beta.messages.requests == []
 
     # All tool results went back together, in order, in one user message.
     results_msg = sent[1]["messages"][-1]
@@ -162,10 +163,38 @@ def test_without_fallback_uses_plain_messages_endpoint(
     assert "fallbacks" not in client.messages.requests[0]
 
 
+def test_server_side_fallback_uses_beta_endpoint(
+    make_guard: MakeGuard, email_policy: Policy
+) -> None:
+    guard = make_guard(email_policy)
+    client = FakeClient([Message([Block(type="text", text="hi")], "end_turn")])
+    result = run_tool_loop(
+        client,
+        guard,
+        messages=[],
+        tools=[],
+        server_side_fallback=True,
+        model="claude-x",
+    )
+    assert result.text == "hi"
+    assert client.messages.requests == []
+    sent = client.beta.messages.requests
+    assert sent[0]["model"] == "claude-x"
+    assert sent[0]["betas"] == [FALLBACK_BETA]
+    assert sent[0]["fallbacks"] == "default"
+
+
 def test_extra_betas_are_kept(make_guard: MakeGuard, email_policy: Policy) -> None:
     guard = make_guard(email_policy)
     client = FakeClient([Message([], "end_turn")])
-    run_tool_loop(client, guard, messages=[], tools=[], betas=["some-other-beta"])
+    run_tool_loop(
+        client,
+        guard,
+        messages=[],
+        tools=[],
+        server_side_fallback=True,
+        betas=["some-other-beta"],
+    )
     assert client.beta.messages.requests[0]["betas"] == ["some-other-beta", FALLBACK_BETA]
 
 

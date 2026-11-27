@@ -131,9 +131,8 @@ later or be withdrawn; permanent ones close it.
 
 ## Mapping to the OWASP Top 10 for LLM Applications 2025
 
-**How this was verified.** The owasp.org and genai.owasp.org sites were not
-reachable from the environment this was written in, so the entries were read from
-the official OWASP source repository instead:
+**Source pinned for reproducibility.** The entries below were read from
+the official OWASP source repository,
 [GenAI-Security-Project/GenAI-LLM-Top10](https://github.com/GenAI-Security-Project/GenAI-LLM-Top10),
 directory `2025/`, at commit
 [`9253e38`](https://github.com/GenAI-Security-Project/GenAI-LLM-Top10/tree/9253e38ade58e959b531c0c5c9a4842272c9cd0e).

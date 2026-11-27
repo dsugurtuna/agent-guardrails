@@ -421,3 +421,35 @@ def test_rejection_records_the_state_it_actually_overrode(tmp_path: Path) -> Non
     records = [json.loads(line) for line in guard.audit.path.read_text().splitlines()]
     rejected = next(r for r in records if r["event"] == "rejected")
     assert rejected["was"] == ("approved" if approved_first == [True] else "pending")
+
+
+def test_reviewer_reject_mid_execute_approved_returns_not_approved(tmp_path: Path) -> None:
+    guard, store, action_id = _approved_send(
+        tmp_path, Policy.from_yaml("tools: {send: {mode: approve}}\n")
+    )
+    store.after_get = lambda: store.reject(action_id, by="bob", now=time.time(), note="stop")
+    outcome = guard.execute_approved(action_id)
+    assert outcome.status is Status.BLOCKED
+    assert outcome.reason is Reason.NOT_APPROVED
+    assert "rejected" in outcome.message
+
+
+def test_expiry_mid_execute_approved_returns_approval_expired(tmp_path: Path) -> None:
+    guard, store, action_id = _approved_send(
+        tmp_path, Policy.from_yaml("tools: {send: {mode: approve}}\n")
+    )
+
+    def expire_meanwhile() -> None:
+        with store.transaction() as tx:
+            tx.update(
+                action_id,
+                expect=(ActionState.APPROVED,),
+                status=ActionState.EXPIRED,
+                reason="approval_expired",
+                finished_at=time.time(),
+            )
+
+    store.after_get = expire_meanwhile
+    outcome = guard.execute_approved(action_id)
+    assert outcome.status is Status.BLOCKED
+    assert outcome.reason is Reason.APPROVAL_EXPIRED

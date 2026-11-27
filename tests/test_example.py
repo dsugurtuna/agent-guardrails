@@ -9,13 +9,15 @@ from types import ModuleType
 
 import pytest
 
-from agent_guardrails import Status, verify_log
+from agent_guardrails import Policy, Status, verify_log
 
-EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "email_calendar_assistant.py"
+EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+EXAMPLE = EXAMPLES_DIR / "email_calendar_assistant.py"
+CLAUDE_EXAMPLE = EXAMPLES_DIR / "claude_assistant.py"
 
 
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("email_calendar_assistant", EXAMPLE)
+def _load(path: Path = EXAMPLE, name: str = "email_calendar_assistant") -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -58,3 +60,19 @@ def test_example_end_to_end(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
 def test_example_main_runs_in_a_temp_dir(capsys: pytest.CaptureFixture[str]) -> None:
     assert _load().main([]) == 0
     assert "emails sent" in capsys.readouterr().out
+
+
+def test_claude_example_imports_without_examples_on_sys_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if Path(p) != EXAMPLES_DIR])
+    monkeypatch.delitem(sys.modules, "email_calendar_assistant", raising=False)
+    module = _load(CLAUDE_EXAMPLE, "claude_assistant_isolated")
+    policy = Policy.from_yaml(EXAMPLES_DIR / "policy.yaml")
+    tools = module.tools_for(policy)
+    assert [t["name"] for t in tools] == [
+        "list_events",
+        "create_event",
+        "draft_reply",
+        "send_email",
+    ]

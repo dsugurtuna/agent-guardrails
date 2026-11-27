@@ -14,6 +14,31 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- Expired `pending` and `approved` actions no longer act as duplicates or consume
+  `max_pending` quota before `pending()` / `run_approved()` sweeps them; `Guard.call()`
+  expires stale actions inside the same `BEGIN IMMEDIATE` transaction, and
+  `pending()` / `approve()` respect shortened `approval_ttl_seconds` in the active policy.
+- `Guard.execute_approved()` reports `Status.BLOCKED` (`Reason.NOT_APPROVED` /
+  `Reason.APPROVAL_EXPIRED`) rather than `Status.DUPLICATE` when a reviewer rejects or
+  expires an approved action mid-flight.
+- `Guard.call()` blocks non-mapping `args` with `Reason.INVALID_ARGUMENTS` instead of
+  raising `TypeError`, and records `policy_hash` and redacted `args` even for malformed
+  tool names.
+- `Policy.from_yaml()` handles single-line YAML/JSON policies longer than 255 bytes
+  without raising `OSError` (`ENAMETOOLONG`), and `ArgSpec` validates non-empty,
+  type-compatible `choices`.
+- `AuditLog.head()` and `verify_log()` acquire a shared `flock` (`LOCK_SH`) while
+  reading, and fail closed with `AuditIntegrityError` / `VerificationResult(ok=False)`
+  if a tampered record contains escaped lone surrogates (`UnicodeEncodeError`).
+- `agent-guardrails queue list` redacts `DEFAULT_REDACT_FIELDS` in summary output and
+  `--json` output while keeping full arguments in `queue show`.
+- `scrub()` skips values shorter than four characters so trivial secrets such as `"a"`
+  or `"1"` cannot corrupt ordinary words in audit detail strings.
+- `adapters.claude.run_tool_loop` defaults `server_side_fallback=False` so standard
+  `client.messages.create` clients (Anthropic, Bedrock, Vertex) work without opting into
+  beta headers.
+- `examples/claude_assistant.py` resolves sibling `email_calendar_assistant` cleanly
+  regardless of working directory or `sys.path`.
 - Several processes creating a new store at the same moment could fail with
   "database is locked": while one process switches a new file to WAL, SQLite can
   fail another's switch at once, without waiting on the busy timeout. The store now

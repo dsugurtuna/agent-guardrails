@@ -194,3 +194,56 @@ def test_anchor_detects_a_rewritten_prefix(tmp_path: Path) -> None:
     assert not verify_log(log.path, anchor=anchor).ok
     assert verify_log(log.path, anchor=(0, GENESIS_HASH)).ok
     assert not verify_log(log.path, anchor=(0, "f" * 64)).ok
+
+
+def test_lone_surrogate_in_log_fails_closed(tmp_path: Path) -> None:
+    log = _log(tmp_path, 2)
+    lines = log.path.read_text(encoding="utf-8").splitlines()
+    # Escaped lone surrogate passes json.loads, then fails UTF-8 encoding in record_hash.
+    lines[1] = lines[1].replace('"tool":"t"', '"tool":"t\\ud800"')
+    log.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = verify_log(log.path)
+    assert not result.ok and result.line == 2
+    assert "Unicode" in (result.error or "")
+    with pytest.raises(AuditIntegrityError, match="Unicode"):
+        log.append("executed")
+    with pytest.raises(AuditIntegrityError, match="Unicode"):
+        log.head()
+
+
+def test_concurrent_readers_do_not_observe_partial_large_records(tmp_path: Path) -> None:
+    import threading
+
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, fsync=False)
+    log.append("executed", payload="x" * 16_384)
+    errors: list[Exception] = []
+    stop = threading.Event()
+
+    def writer() -> None:
+        try:
+            for i in range(15):
+                log.append("executed", seq_tag=i, payload="y" * 16_384)
+        except Exception as exc:  # pragma: no cover - test assertion below
+            errors.append(exc)
+        finally:
+            stop.set()
+
+    def reader() -> None:
+        try:
+            while not stop.is_set():
+                count, _ = log.head()
+                res = verify_log(path)
+                assert res.ok and res.records >= count
+        except Exception as exc:  # pragma: no cover - test assertion below
+            errors.append(exc)
+
+    t_write = threading.Thread(target=writer)
+    t_read = threading.Thread(target=reader)
+    t_write.start()
+    t_read.start()
+    t_write.join(timeout=30)
+    t_read.join(timeout=30)
+    assert not errors
+    assert verify_log(path).records == 16
